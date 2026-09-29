@@ -31,6 +31,31 @@ services:
       USERS_URL: http://users:8000
       CHANNELS_URL: http://channels:8000
       MONGODB_URL: mongodb://messages-mongodb:27017
+      RABBITMQ_URL: amqp://chat:chat@rabbitmq:5672/
+    networks:
+      - microsvcs
+
+  ozy:
+    build: ./ozy
+    ports:
+      - "8004:8000"
+    volumes:
+      - ./ozy/app:/app/app
+    environment:
+      USERS_URL: http://users:8000
+      MONGODB_URL: mongodb://ozy-mongodb:27017
+      RABBITMQ_URL: amqp://chat:chat@rabbitmq:5672/
+    networks:
+      - microsvcs
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: chat
+      RABBITMQ_DEFAULT_PASS: chat
     networks:
       - microsvcs
 
@@ -46,11 +71,16 @@ services:
     image: mongo:7
     volumes: [messages-data:/data/db]
     networks: [microsvcs]
+  ozy-mongodb:
+    image: mongo:7
+    volumes: [ozy-data:/data/db]
+    networks: [microsvcs]
 
 volumes:
   users-data:
   channels-data:
   messages-data:
+  ozy-data:
 
 networks:
   microsvcs:
