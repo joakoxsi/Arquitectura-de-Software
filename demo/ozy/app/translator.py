@@ -1,6 +1,7 @@
 """Motor de traducción determinista basado en glosario + plantillas (sin LLM)."""
 from app.detector import DetectedTerm, detect_terms
-from app.domain import AudienceLevel, ReadMessage, TranslatedTerm, Translation
+from app.domain import (AudienceLevel, GlossaryEntry, ReadMessage, TranslatedTerm,
+                        Translation)
 from app.repositories import GlossaryRepository
 
 NO_TERMS = {
@@ -74,14 +75,18 @@ def to_translated_term(term: DetectedTerm) -> TranslatedTerm:
 
 
 def translate(message: ReadMessage, level: AudienceLevel,
-              glossary: GlossaryRepository) -> Translation:
-    """Detecta términos, registra candidatos y arma la explicación del mensaje."""
+              glossary: GlossaryRepository) -> tuple[Translation, list[GlossaryEntry]]:
+    """Detecta términos, registra candidatos y arma la explicación del mensaje.
+
+    Devuelve la traducción y los candidatos que se crearon en esta llamada.
+    """
     detection = detect_terms(message.content, glossary.find_all())
-    for candidate in detection.new_candidates:
-        glossary.add_candidate(candidate)
-    return Translation(
+    registered = [entry for entry in map(glossary.add_candidate,
+                                         detection.new_candidates) if entry]
+    translation = Translation(
         message_id=message.message_id,
         channel_id=message.channel_id,
         audience_level=level,
         explanation=render_explanation(detection.terms, level),
         terms=[to_translated_term(term) for term in detection.terms])
+    return translation, registered

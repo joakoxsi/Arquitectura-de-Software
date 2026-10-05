@@ -9,9 +9,11 @@ independientes, cada uno dueño de sus datos:
 | `users` | 8001 | Crear y consultar usuarios |
 | `channels` | 8002 | Crear y consultar canales |
 | `messages` | 8003 | Crear y listar mensajes |
+| `ozy` | 8004 | Traducir jerga técnica a lenguaje simple (ver [ozy/README.md](ozy/README.md)) |
+| `rabbitmq` | 5672 / 15672 | Broker de eventos (exchange `chat`) |
 
 La documentación OpenAPI de cada servicio está disponible en
-`http://localhost:{8001,8002,8003}/docs`. El servicio `messages` consulta las
+`http://localhost:{8001,8002,8003,8004}/docs`. El servicio `messages` consulta las
 APIs de `users` y `channels` para validar las referencias antes de crear un
 mensaje. Ningún servicio accede a los datos internos de otro.
 

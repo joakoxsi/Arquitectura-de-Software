@@ -40,12 +40,26 @@ def test_create_translation_registers_candidates_once(client, message):
 def test_create_translation_publishes_event(client, message):
     translation = client.post("/api/v1/messages/m1/translation",
                               json={"audience_level": "experto"}).json()
-    [event] = client.get("/api/v1/events").json()
+    candidate, event = client.get("/api/v1/events").json()
+    assert candidate["type"] == "chat.glossary.candidate.registered"
     assert event["type"] == "chat.translation.created"
     assert event["data"] == {"translation_id": translation["translation_id"],
                              "message_id": "m1", "channel_id": "c1",
                              "audience_level": "experto",
                              "terms": ["PR", "Pipeline", "KPI", "ETL"]}
+
+
+def test_candidate_event_is_emitted_only_when_the_candidate_is_new(client, message):
+    client.post("/api/v1/messages/m1/translation")
+    client.post("/api/v1/messages/m1/translation")
+    types = [event["type"] for event in client.get("/api/v1/events").json()]
+    assert types == ["chat.glossary.candidate.registered", "chat.translation.created",
+                     "chat.translation.created"]
+    [candidate] = [e for e in client.get("/api/v1/events").json()
+                   if e["type"] == "chat.glossary.candidate.registered"]
+    entry_id = client.get("/api/v1/glossary/ETL").json()["entries"][0]["id"]
+    assert candidate["data"] == {"entry_id": entry_id, "term": "ETL",
+                                 "message_id": "m1", "channel_id": "c1"}
 
 
 def test_translation_is_replaced_per_audience_level(client, repos, message):
@@ -115,6 +129,27 @@ def test_validate_candidate_with_definition(client, message):
     assert body["validated_at"]
     etl = client.post("/api/v1/messages/m1/translation").json()["terms"][-1]
     assert etl["term"] == "ETL" and etl["known"]
+
+
+def test_validation_and_rejection_emit_events(client, message):
+    entry_id = candidate_id(client, message)
+    client.patch(f"/api/v1/glossary/{entry_id}/validation", json={
+        "estado": "validado", "validated_by": "u1", "ambito": "datos", "definition": "x"})
+    pr_id = client.get("/api/v1/glossary/PR").json()["entries"][0]["id"]
+    client.patch(f"/api/v1/glossary/{pr_id}/validation",
+                 json={"estado": "rechazado", "validated_by": "u2"})
+    validated, rejected = client.get("/api/v1/events").json()[-2:]
+    assert validated["type"] == "chat.glossary.entry.validated"
+    assert validated["data"] == {"entry_id": entry_id, "term": "ETL", "ambito": "datos",
+                                 "estado": "validado", "validated_by": "u1"}
+    assert rejected["type"] == "chat.glossary.entry.rejected"
+    assert rejected["subject_id"] == pr_id
+
+
+def test_failed_validation_emits_no_event(client):
+    client.patch("/api/v1/glossary/nope/validation",
+                 json={"estado": "rechazado", "validated_by": "u"})
+    assert client.get("/api/v1/events").json() == []
 
 
 def test_validating_without_definition_is_422(client, message):

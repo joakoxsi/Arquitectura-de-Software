@@ -11,7 +11,8 @@ from app.config import RABBITMQ_URL
 from app.consumer import MessageCreatedConsumer
 from app.db import database
 from app.domain import Ambito, AudienceLevel, Estado, GlossaryEntry
-from app.publisher import TRANSLATION_CREATED, events, publish
+from app.publisher import (CANDIDATE_REGISTERED, ENTRY_REJECTED, ENTRY_VALIDATED,
+                           TRANSLATION_CREATED, events, publish)
 from app.repositories import Repositories
 from app.seed import seed_glossary
 from app.translator import translate
@@ -68,8 +69,12 @@ def create_translation(message_id: str, body: TranslationCreate | None = None):
     message = repos.read_model.get(message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    translation = translate(message, level, repos.glossary)
+    translation, candidates = translate(message, level, repos.glossary)
     repos.translations.save(translation)
+    for candidate in candidates:
+        publish(CANDIDATE_REGISTERED, candidate.id,
+                {"entry_id": candidate.id, "term": candidate.term,
+                 "message_id": message.message_id, "channel_id": message.channel_id})
     publish(TRANSLATION_CREATED, translation.translation_id,
             {"translation_id": translation.translation_id,
              "message_id": translation.message_id,
@@ -123,6 +128,11 @@ def validate_entry(entry_id: str, body: ValidationUpdate):
     except DuplicateKeyError:
         raise HTTPException(status_code=409,
                             detail="Term already has an entry for that ambito")
+    publish(ENTRY_VALIDATED if updated.estado == Estado.VALIDADO else ENTRY_REJECTED,
+            updated.id,
+            {"entry_id": updated.id, "term": updated.term,
+             "ambito": updated.ambito.value if updated.ambito else None,
+             "estado": updated.estado.value, "validated_by": updated.validated_by})
     return entry_view(updated)
 
 

@@ -51,13 +51,17 @@ class GlossaryRepository:
             {"$setOnInsert": doc},
             upsert=True)
 
-    def add_candidate(self, term: str) -> None:
-        """Registra un término desconocido como candidato, sin duplicarlo."""
+    def add_candidate(self, term: str) -> GlossaryEntry | None:
+        """Registra un término desconocido como candidato, sin duplicarlo.
+
+        Devuelve la entrada solo si se creó ahora; None si ya existía.
+        """
         entry = GlossaryEntry(term=term, estado=Estado.CANDIDATO)
-        self.collection.update_one(
+        result = self.collection.update_one(
             {"term_normalized": entry.term_normalized, "ambito": None},
             {"$setOnInsert": entry.model_dump(mode="json")},
             upsert=True)
+        return entry if result.upserted_id is not None else None
 
     def find_all(self, ambito: Ambito | None = None,
                  estado: Estado | None = None) -> list[GlossaryEntry]:

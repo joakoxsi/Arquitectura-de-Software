@@ -11,6 +11,9 @@ logger = logging.getLogger("ozy.publisher")
 
 EXCHANGE = "chat"
 TRANSLATION_CREATED = "chat.translation.created"
+CANDIDATE_REGISTERED = "chat.glossary.candidate.registered"
+ENTRY_VALIDATED = "chat.glossary.entry.validated"
+ENTRY_REJECTED = "chat.glossary.entry.rejected"
 events: list[dict] = []
 
 

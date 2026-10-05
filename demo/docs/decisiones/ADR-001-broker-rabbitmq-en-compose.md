@@ -53,7 +53,8 @@ imagen.
 - Si el broker no está disponible al arrancar, Ozy reintenta la conexión con
   backoff. El resto de la API (glosario, traducciones de mensajes ya recibidos)
   sigue funcionando mientras tanto.
-- Publica su propio evento, `chat.translation.created`, en el mismo exchange.
+- Publica sus propios eventos (`chat.translation.created` y `chat.glossary.*`) en
+  el mismo exchange; el contrato completo está en el [README de Ozy](../../ozy/README.md#eventos).
 
 ### Acoplamiento y límites
 - `messages` y `ozy` no se conocen: solo comparten el nombre del exchange y del
