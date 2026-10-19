@@ -567,6 +567,9 @@ explica los tres niveles de prueba y cómo resolver los problemas más comunes.
 - [ADR-001](../docs/decisiones/ADR-001-broker-rabbitmq-en-compose.md): se agregó
   RabbitMQ al compose y se conectó `messages` (solo configuración, sin tocar su
   código).
+- [ADR-002](../docs/decisiones/ADR-002-correccion-serializacion-servicios-base.md):
+  se corrigió en los servicios base un error de serialización que impedía a
+  `messages` publicar `chat.message.created` (una línea por servicio).
 - Motor determinista (glosario + plantillas) en vez de un LLM: resultados
   reproducibles, sin costo ni dependencia externa, y fáciles de testear.
 - Un candidato se completa con el mismo `PATCH` de validación (definición +

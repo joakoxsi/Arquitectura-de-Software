@@ -14,8 +14,34 @@ Hay tres niveles de prueba, de más rápido a más completo:
 ## Requisitos
 
 - **Docker Desktop** abierto y corriendo (o Docker Engine + Compose v2).
-- **Python 3.12** solo para los tests unitarios y el script de punta a punta.
+- **Git**, para clonar el repositorio.
+- **Python 3.10 o superior**, solo para los tests unitarios y el script de punta
+  a punta. El sistema en sí corre completo dentro de Docker.
 - Puertos libres: 8001–8004, 5672 y 15672.
+
+## Desde cero en otro PC
+
+```bash
+git clone https://github.com/joakoxsi/Arquitectura-de-Software.git
+cd Arquitectura-de-Software/demo
+docker compose up --build
+```
+
+La primera vez tarda unos minutos, porque descarga las imágenes de MongoDB,
+RabbitMQ y Python. Está listo cuando el log de Ozy muestra:
+
+```
+INFO:ozy.consumer:Consuming chat.message.created from queue ozy.chat.message.created
+```
+
+Luego, en otra terminal y desde la misma carpeta `demo/`:
+
+```bash
+python ozy/scripts/e2e.py
+```
+
+En Windows, si `python` no se reconoce, prueba con `py ozy/scripts/e2e.py`. Si
+termina con `Todo el flujo funciona de punta a punta.`, el sistema está bien.
 
 ---
 
@@ -139,22 +165,15 @@ hay que reconstruir con `--build`.
 | `POST …/translation` responde `404 Message not found` | Ozy no recibió el evento del mensaje | Ver las tres filas siguientes |
 | — el mensaje se creó antes de que Ozy arrancara | La cola de Ozy aún no existía y RabbitMQ descartó el evento | Crear un mensaje nuevo después de ver `Consuming…` en el log de Ozy |
 | — `messages` no publica | Falta `RABBITMQ_URL` en `messages` | Revisar `docker-compose.yaml` |
-| — `POST` en users, channels o messages responde `500` | Error conocido de los servicios base (ver abajo) | Ver la sección siguiente |
+| — `POST` en users, channels o messages responde `500` | Versión antigua de los servicios base | `git pull` y `docker compose up --build` (ver abajo) |
 | `display_name` es `null` | `users` no respondió | La traducción se entrega igual; revisar `docker compose logs users` |
 | Puerto ocupado al levantar | Otro programa usa 8001–8004, 5672 o 15672 | Cerrar ese programa o cambiar el puerto publicado en el compose |
 | Los tests fallan con `ModuleNotFoundError` | Dependencias no instaladas o otra carpeta | Correr desde `demo/ozy/` con el `.venv` creado |
 
-### Error conocido de los servicios base
+### Error de los servicios base (corregido)
 
-Los servicios `users`, `channels` y `messages` (entregados como base) responden
-`500 Internal Server Error` al crear un recurso, aunque el recurso sí se guarda.
-
-**Causa:** pymongo agrega un campo `_id` (de tipo `ObjectId`) al mismo diccionario
-que recibe `insert_one`. Los servicios devuelven ese diccionario y FastAPI no sabe
-convertir un `ObjectId` a JSON. En `messages` el problema es mayor: el error ocurre
-al serializar el evento, así que **`chat.message.created` nunca llega a RabbitMQ**
-y Ozy no puede recibir mensajes.
-
-**Corrección mínima:** insertar una copia del diccionario, por ejemplo
-`users.insert_one({**user})` en vez de `users.insert_one(user)`, y lo mismo en
-`channels` y `messages`.
+Los servicios base respondían `500` al crear recursos y `messages` no llegaba a
+publicar `chat.message.created`. Está corregido; la causa y la corrección están
+en la [ADR-002](decisiones/ADR-002-correccion-serializacion-servicios-base.md).
+Si vuelve a aparecer un `500` al crear, confirma que tienes la última versión del
+repositorio (`git pull`) y reconstruye con `docker compose up --build`.

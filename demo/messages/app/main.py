@@ -71,7 +71,7 @@ def create_message(channel_id: str, body: MessageCreate):
     message = {"id": str(uuid4()), "channel_id": channel_id,
                "created_at": datetime.now(timezone.utc).isoformat(),
                **body.model_dump()}
-    messages.insert_one(message)
+    messages.insert_one({**message})  # copia: insert_one agrega _id (ObjectId) al dict
     publish("chat.message.created", message["id"], message)
     return message
 

@@ -27,6 +27,10 @@ Por eso no había forma de que otro servicio consumiera los eventos del chat.
 **No se modificó el código de `messages`**: solo su configuración en el compose.
 Se activó una capacidad que ya estaba implementada.
 
+> **Nota posterior:** la [ADR-002](ADR-002-correccion-serializacion-servicios-base.md)
+> corrigió después una línea en `messages` (y en `users` y `channels`), porque un
+> error de serialización impedía que el evento llegara a publicarse.
+
 ¿Por qué un usuario propio y no `guest`? RabbitMQ solo acepta a `guest` desde
 localhost. Un usuario explícito evita depender de cómo esté configurada la
 imagen.
