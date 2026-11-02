@@ -1,0 +1,47 @@
+# Carga para demostrar el HPA. Solo lee el glosario de Ozy: no crea datos en el
+# core ni publica eventos en el broker compartido del curso.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ozy-carga
+  labels:
+    app.kubernetes.io/name: ozy
+    app.kubernetes.io/component: carga
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  parallelism: 2      # 2 pods generadores x CONCURRENCY hilos
+  completions: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ozy
+        app.kubernetes.io/component: carga
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: carga
+          image: ozy
+          command: ["python", "scripts/carga.py"]
+          env:
+            - name: OZY_URL
+              value: http://ozy:8000
+            - name: DURATION
+              value: "300"
+            - name: CONCURRENCY
+              value: "16"
+            - name: INTERVAL
+              value: "15"
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 96Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

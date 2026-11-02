@@ -5,6 +5,8 @@ from urllib.error import URLError
 
 os.environ.setdefault("MONGODB_URL", "mongodb://test")
 os.environ.pop("RABBITMQ_URL", None)  # sin broker: el consumidor no arranca
+os.environ.pop("CHANNELS_URL", None)  # ni sincronizador por API
+os.environ.pop("MESSAGES_URL", None)
 
 import mongomock
 import pytest

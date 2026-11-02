@@ -7,9 +7,10 @@ Hay tres niveles de prueba, de más rápido a más completo:
 
 | Nivel | Qué prueba | Necesita Docker | Tiempo |
 |---|---|---|---|
-| [1. Tests unitarios](#1-tests-unitarios-pytest) | Lógica de Ozy aislada (54 tests) | No | ~2 s |
+| [1. Tests unitarios](#1-tests-unitarios-pytest) | Lógica de Ozy aislada (74 tests) | No | ~2 s |
 | [2. Prueba de punta a punta](#2-prueba-de-punta-a-punta-script) | Flujo completo con todos los servicios reales | Sí | ~1 min |
 | [3. Prueba manual](#3-prueba-manual-swagger) | Explorar la API desde el navegador | Sí | libre |
+| [4. Kubernetes](../ozy/k8s/README.md#evidencia) | Flujo integrado contra el chat base del clúster y escalamiento | kubectl | ~1 min / ~10 min |
 
 ## Requisitos
 
@@ -73,7 +74,7 @@ Variantes útiles:
 .venv/Scripts/python -m pytest -x                        # parar en el primer fallo
 ```
 
-Resultado esperado: `54 passed`.
+Resultado esperado: `74 passed`.
 
 ---
 

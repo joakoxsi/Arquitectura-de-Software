@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ozy-config
+  labels:
+    app.kubernetes.io/name: ozy
+    app.kubernetes.io/part-of: chat
+data:
+  # Servicios del chat base. Valores por defecto = mismo namespace; el overlay
+  # `curso` los reemplaza por los DNS reales del core en el clúster del curso.
+  USERS_URL: http://users:8000
+  # El `messages` del curso no publica eventos: Ozy lee los mensajes por estas APIs
+  # (una sola réplica a la vez, con lease en su MongoDB) y la prueba integrada las usa.
+  CHANNELS_URL: http://channels:8000
+  MESSAGES_URL: http://messages:8000
+  MESSAGE_SYNC_INTERVAL: "5"
+  # No consumir chat.message.created: el broker de Ozy es propio y solo publica.
+  CONSUME_MESSAGE_EVENTS: "false"
+  STARTUP_DB_TIMEOUT: "60"

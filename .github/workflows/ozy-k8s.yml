@@ -1,0 +1,177 @@
+# CI/CD de Ozy: tests -> imagen en GHCR -> deploy al clúster del curso -> prueba integrada.
+#
+# Configuración (Settings del repo -> Secrets and variables -> Actions):
+#   secrets.KUBECONFIG        kubeconfig con acceso al namespace del grupo
+#   secrets.OZY_USERS_URL     URL interna de users     (no se guarda en el repo)
+#   secrets.OZY_CHANNELS_URL  URL interna de channels  (no se guarda en el repo)
+#   secrets.OZY_MESSAGES_URL  URL interna de messages  (no se guarda en el repo)
+#   secrets.OZY_RABBITMQ_PASSWORD  clave del RabbitMQ propio de Ozy (inventarla, larga y al azar)
+#   vars.OZY_NAMESPACE        namespace del grupo (def. grupo-ozy)
+#   vars.CORE_NAMESPACE       opcional: namespace del chat base, solo para listarlo en la evidencia
+# Sin KUBECONFIG el workflow igual corre tests y publica la imagen; solo omite el deploy.
+name: ozy-k8s
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "demo/ozy/**"
+      - ".github/workflows/ozy-k8s.yml"
+  pull_request:
+    paths:
+      - "demo/ozy/**"
+  workflow_dispatch:
+    inputs:
+      escalamiento:
+        description: "Correr también la prueba de escalamiento (~10 min)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ozy-deploy-${{ github.ref }}
+  cancel-in-progress: false   # nunca cortar un deploy a medias
+
+env:
+  OZY_DIR: demo/ozy
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: demo/ozy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: demo/ozy/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -v
+      - name: Validar manifiestos (render de kustomize)
+        run: |
+          cp k8s/overlays/curso/core.env.example k8s/overlays/curso/core.env
+          kubectl kustomize k8s/overlays/curso > /dev/null
+          kubectl kustomize k8s/pruebas > /dev/null
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ozy" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: demo/ozy
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+            ${{ steps.name.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: curso
+    env:
+      NS: ${{ vars.OZY_NAMESPACE || 'grupo-ozy' }}
+      CORE_NS: ${{ vars.CORE_NAMESPACE }}
+      IMAGE: ${{ needs.image.outputs.image }}
+      HAS_KUBECONFIG: ${{ secrets.KUBECONFIG != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sin KUBECONFIG no hay deploy
+        if: env.HAS_KUBECONFIG != 'true'
+        run: echo "::warning::Falta secrets.KUBECONFIG; se omite el deploy."
+      - uses: azure/setup-kubectl@v4
+        if: env.HAS_KUBECONFIG == 'true'
+      - name: Configurar acceso al clúster
+        if: env.HAS_KUBECONFIG == 'true'
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "${{ secrets.KUBECONFIG }}" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          kubectl version
+          kubectl auth can-i create deployments -n "$NS"
+      - name: Fijar namespace, imagen (por commit) y direcciones del core
+        if: env.HAS_KUBECONFIG == 'true'
+        working-directory: demo/ozy/k8s
+        env:
+          USERS_URL: ${{ secrets.OZY_USERS_URL }}
+          CHANNELS_URL: ${{ secrets.OZY_CHANNELS_URL }}
+          MESSAGES_URL: ${{ secrets.OZY_MESSAGES_URL }}
+        run: |
+          for f in overlays/curso/kustomization.yaml pruebas/kustomization.yaml; do
+            sed -i -e "s|^namespace: .*|namespace: ${NS}|" \
+                   -e "s|newName: .*|newName: ${IMAGE}|" \
+                   -e "s|newTag: .*|newTag: ${GITHUB_SHA}|" "$f"
+          done
+          # Las URLs del core vienen de secrets: se escriben solo en el runner (efímero)
+          # y nunca se imprimen.
+          for v in USERS_URL CHANNELS_URL MESSAGES_URL; do
+            [ -n "${!v}" ] || { echo "::error::Falta el secret OZY_${v}"; exit 1; }
+          done
+          printf 'USERS_URL=%s\nCHANNELS_URL=%s\nMESSAGES_URL=%s\n' \
+            "$USERS_URL" "$CHANNELS_URL" "$MESSAGES_URL" > overlays/curso/core.env
+      - name: Secret del broker propio de Ozy
+        if: env.HAS_KUBECONFIG == 'true'
+        env:
+          RABBITMQ_PASSWORD: ${{ secrets.OZY_RABBITMQ_PASSWORD }}
+        run: |
+          [ -n "$RABBITMQ_PASSWORD" ] || { echo "::error::Falta el secret OZY_RABBITMQ_PASSWORD"; exit 1; }
+          # La clave va al broker (DEFAULT_*) y a Ozy (RABBITMQ_URL); nunca se imprime.
+          PASS_URL=$(python3 -c 'import os,urllib.parse;print(urllib.parse.quote(os.environ["RABBITMQ_PASSWORD"],safe=""))')
+          kubectl -n "$NS" create secret generic ozy-secrets \
+            --from-literal=RABBITMQ_DEFAULT_USER=ozy \
+            --from-literal=RABBITMQ_DEFAULT_PASS="$RABBITMQ_PASSWORD" \
+            --from-literal=RABBITMQ_URL="amqp://ozy:${PASS_URL}@ozy-rabbitmq:5672/" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Aplicar manifiestos de Ozy (no toca el core)
+        if: env.HAS_KUBECONFIG == 'true'
+        run: kubectl apply -k "$OZY_DIR/k8s/overlays/curso"
+      - name: Esperar el rollout
+        if: env.HAS_KUBECONFIG == 'true'
+        run: |
+          kubectl -n "$NS" rollout status statefulset/ozy-mongodb --timeout=180s
+          kubectl -n "$NS" rollout status deployment/ozy-rabbitmq --timeout=180s
+          kubectl -n "$NS" rollout status deployment/ozy --timeout=240s
+          kubectl -n "$NS" get deploy,hpa,pods -l app.kubernetes.io/name=ozy -o wide
+      - name: Diagnóstico si el rollout falla
+        if: failure() && env.HAS_KUBECONFIG == 'true'
+        run: |
+          kubectl -n "$NS" describe deploy ozy | tail -30
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -30
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=api --tail=50 --prefix || true
+      - name: Prueba integrada contra el chat base
+        if: env.HAS_KUBECONFIG == 'true'
+        run: |
+          NS="$NS" CORE_NS="$CORE_NS" "$OZY_DIR/k8s/evidencia/flujo-integrado.sh"
+          grep -q "FLUJO INTEGRADO OK" "$OZY_DIR"/k8s/evidencia/salida/*-flujo/resumen.txt
+      - name: Prueba de escalamiento (HPA)
+        if: env.HAS_KUBECONFIG == 'true' && github.event_name == 'workflow_dispatch' && inputs.escalamiento
+        run: NS="$NS" "$OZY_DIR/k8s/evidencia/escalamiento.sh"
+      - name: Guardar evidencia
+        if: always() && env.HAS_KUBECONFIG == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencia-ozy-${{ github.run_number }}
+          path: demo/ozy/k8s/evidencia/salida/
+          if-no-files-found: ignore

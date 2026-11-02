@@ -1,0 +1,115 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ozy
+  labels:
+    app.kubernetes.io/name: ozy
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: chat
+spec:
+  # Sin `replicas`: las réplicas las decide el HPA (hpa.yaml). Si se fijaran aquí,
+  # cada `kubectl apply` del CI pisaría la escala elegida por el autoscaler.
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ozy
+      app.kubernetes.io/component: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # nunca baja de la capacidad actual durante un deploy
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ozy
+        app.kubernetes.io/component: api
+        app.kubernetes.io/part-of: chat
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      terminationGracePeriodSeconds: 30
+      # Repartir réplicas entre nodos si el clúster tiene más de uno (preferencia, no obligación).
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: ozy
+              app.kubernetes.io/component: api
+      containers:
+        - name: ozy
+          image: ozy   # el overlay lo reemplaza por la imagen publicada por el CI
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: MONGODB_URL
+              value: mongodb://ozy-mongodb:27017
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # Broker PROPIO de Ozy (rabbitmq.yaml), solo para publicar sus eventos: con
+            # CONSUME_MESSAGE_EVENTS=false los mensajes se leen por la API de channels y
+            # messages (ConfigMap). optional: sin Secret, Ozy funciona sin publicar al broker.
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ozy-secrets
+                  key: RABBITMQ_URL
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: ozy-config
+          resources:
+            # Dimensionado para la cuota del grupo (limits 2 CPU / 2Gi, requests 1 CPU / 1Gi):
+            # 4 réplicas + MongoDB + RabbitMQ + 2 generadores de carga caben con margen.
+            # requests.cpu es la base del porcentaje que mira el HPA.
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 200m
+              memory: 192Mi
+          # startupProbe: el arranque espera a MongoDB (hasta STARTUP_DB_TIMEOUT) e
+          # instala índices y glosario; mientras tanto liveness/readiness no corren.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 3
+            failureThreshold: 30   # hasta ~90 s para arrancar
+          # liveness: proceso vivo y consumidor de eventos vivo. No mira dependencias
+          # externas: reiniciar Ozy no arregla un MongoDB o RabbitMQ caído.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # readiness: solo recibe tráfico si su MongoDB responde.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+            successThreshold: 1
+          lifecycle:
+            # Da tiempo a que el Service deje de enviar tráfico antes de cerrar.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

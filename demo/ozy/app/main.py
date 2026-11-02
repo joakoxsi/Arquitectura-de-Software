@@ -1,44 +1,85 @@
 """Ozy: traduce la jerga técnica de los mensajes del chat a lenguaje simple."""
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from app.config import RABBITMQ_URL
+from app.config import (CHANNELS_URL, CONSUME_MESSAGE_EVENTS, INSTANCE,
+                        MESSAGE_SYNC_INTERVAL, MESSAGES_URL, RABBITMQ_URL,
+                        STARTUP_DB_TIMEOUT)
 from app.consumer import MessageCreatedConsumer
 from app.db import database
 from app.domain import Ambito, AudienceLevel, Estado, GlossaryEntry
 from app.publisher import (CANDIDATE_REGISTERED, ENTRY_REJECTED, ENTRY_VALIDATED,
-                           TRANSLATION_CREATED, events, publish)
+                           TRANSLATION_CREATED, publish)
 from app.repositories import Repositories
 from app.seed import seed_glossary
+from app.synchronizer import MessageSynchronizer, SyncError
 from app.translator import translate
 from app.users_client import get_display_name
 
 logging.basicConfig(level=logging.INFO)
 # El consumidor ya informa cada reintento; pika repite el mismo fallo con tracebacks.
 logging.getLogger("pika").setLevel(logging.CRITICAL)
+logger = logging.getLogger("ozy")
 repos = Repositories(database)
+# Ingesta de mensajes: consumidor del broker o, si no hay broker, sincronizador por API.
+consumer: MessageCreatedConsumer | MessageSynchronizer | None = None
+
+
+def prepare_database(timeout: int = STARTUP_DB_TIMEOUT) -> None:
+    """Índices + seed, reintentando mientras MongoDB arranca (p. ej. en el mismo deploy).
+
+    Ambas operaciones son idempotentes, así que varias réplicas pueden ejecutarlas
+    a la vez sin duplicar nada.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            repos.ensure_indexes()
+            seed_glossary(repos.glossary)
+            return
+        except PyMongoError as error:
+            if time.monotonic() >= deadline:
+                raise
+            logger.warning("MongoDB unavailable (%s); retrying in 2s",
+                           error.__class__.__name__)
+            time.sleep(2)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    repos.ensure_indexes()
-    seed_glossary(repos.glossary)
-    consumer = None
-    if RABBITMQ_URL:
+    global consumer
+    prepare_database()
+    if RABBITMQ_URL and CONSUME_MESSAGE_EVENTS:
         consumer = MessageCreatedConsumer(RABBITMQ_URL, repos.read_model)
+    elif CHANNELS_URL and MESSAGES_URL:
+        consumer = MessageSynchronizer(CHANNELS_URL, MESSAGES_URL, repos.read_model,
+                                       repos.leases, INSTANCE, MESSAGE_SYNC_INTERVAL)
+    if consumer is not None:
         consumer.start()
     yield
     if consumer is not None:
         consumer.stop()
-        consumer.join(timeout=5)
+        if consumer.is_alive():
+            consumer.join(timeout=5)
+        consumer = None
 
 
 app = FastAPI(title="Chat Ozy", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def instance_header(request: Request, call_next):
+    """Indica qué réplica respondió: permite ver el reparto de carga entre pods."""
+    response = await call_next(request)
+    response.headers["X-Ozy-Instance"] = INSTANCE
+    return response
 
 
 class TranslationCreate(BaseModel):
@@ -53,6 +94,19 @@ class ValidationUpdate(BaseModel):
     ambito: Ambito | None = None
 
 
+def emit(event_type: str, subject_id: str, data: dict) -> None:
+    """Publica al broker (si hay) y registra el evento en la base propia."""
+    repos.events.add(publish(event_type, subject_id, data))
+
+
+def ingestion_mode() -> str:
+    if isinstance(consumer, MessageCreatedConsumer):
+        return "broker"
+    if isinstance(consumer, MessageSynchronizer):
+        return "api"
+    return "disabled"
+
+
 def entry_view(entry: GlossaryEntry) -> dict:
     return entry.model_dump(mode="json", exclude={"term_normalized"})
 
@@ -62,20 +116,64 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/live")
+def liveness():
+    """Liveness: el proceso responde y el consumidor de eventos sigue vivo.
+
+    No consulta dependencias externas: si MongoDB o RabbitMQ caen, reiniciar Ozy
+    no lo arregla. Pero si el hilo consumidor murió, Ozy dejaría de recibir
+    mensajes en silencio; reiniciar el pod sí lo recupera.
+    """
+    if consumer is not None and not consumer.is_alive():
+        return JSONResponse(status_code=503,
+                            content={"status": "fail", "consumer": "dead",
+                                     "instance": INSTANCE})
+    return {"status": "ok", "instance": INSTANCE}
+
+
+@app.get("/health/ready")
+def readiness():
+    """Readiness: solo recibe tráfico si su base propia responde.
+
+    RabbitMQ no se exige: sin broker la API sigue funcionando (degradación
+    elegante), así que sacar el pod del Service sería peor.
+    """
+    try:
+        repos.glossary.collection.database.command("ping")
+    except PyMongoError as error:
+        return JSONResponse(status_code=503,
+                            content={"status": "fail", "mongodb": error.__class__.__name__,
+                                     "instance": INSTANCE})
+    return {"status": "ok", "mongodb": "ok",
+            "consumer": ("running" if consumer is not None and consumer.is_alive()
+                         else "disabled" if consumer is None else "dead"),
+            "ingestion": ingestion_mode(),
+            "instance": INSTANCE}
+
+
 @app.post("/api/v1/messages/{message_id}/translation",
           status_code=status.HTTP_201_CREATED)
-def create_translation(message_id: str, body: TranslationCreate | None = None):
+def create_translation(message_id: str, body: TranslationCreate | None = None,
+                       channel_id: str | None = None):
+    """`channel_id` (opcional) acelera un mensaje recién creado cuando Ozy lee por
+    API: sincroniza ese canal en el momento en vez de esperar el próximo ciclo."""
     level = (body or TranslationCreate()).audience_level
     message = repos.read_model.get(message_id)
+    if message is None and channel_id and isinstance(consumer, MessageSynchronizer):
+        try:
+            consumer.sync_channel(channel_id)
+        except SyncError as error:
+            logger.warning("On-demand sync of channel %s failed: %s", channel_id, error)
+        message = repos.read_model.get(message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
     translation, candidates = translate(message, level, repos.glossary)
     repos.translations.save(translation)
     for candidate in candidates:
-        publish(CANDIDATE_REGISTERED, candidate.id,
+        emit(CANDIDATE_REGISTERED, candidate.id,
                 {"entry_id": candidate.id, "term": candidate.term,
                  "message_id": message.message_id, "channel_id": message.channel_id})
-    publish(TRANSLATION_CREATED, translation.translation_id,
+    emit(TRANSLATION_CREATED, translation.translation_id,
             {"translation_id": translation.translation_id,
              "message_id": translation.message_id,
              "channel_id": translation.channel_id,
@@ -128,7 +226,7 @@ def validate_entry(entry_id: str, body: ValidationUpdate):
     except DuplicateKeyError:
         raise HTTPException(status_code=409,
                             detail="Term already has an entry for that ambito")
-    publish(ENTRY_VALIDATED if updated.estado == Estado.VALIDADO else ENTRY_REJECTED,
+    emit(ENTRY_VALIDATED if updated.estado == Estado.VALIDADO else ENTRY_REJECTED,
             updated.id,
             {"entry_id": updated.id, "term": updated.term,
              "ambito": updated.ambito.value if updated.ambito else None,
@@ -138,4 +236,5 @@ def validate_entry(entry_id: str, body: ValidationUpdate):
 
 @app.get("/api/v1/events")
 def list_events():
-    return events
+    """Eventos emitidos por Ozy (los últimos 500), iguales desde cualquier réplica."""
+    return repos.events.list()

@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ozy
+  labels:
+    app.kubernetes.io/name: ozy
+    app.kubernetes.io/part-of: chat
+spec:
+  # Mantenimientos del clúster (drain de nodos) nunca dejan a Ozy sin réplicas.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ozy
+      app.kubernetes.io/component: api
