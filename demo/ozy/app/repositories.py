@@ -1,7 +1,10 @@
 """Repositorios sobre las colecciones de Ozy."""
+from datetime import datetime, timedelta, timezone
+
 from pymongo import ASCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
+from pymongo.errors import DuplicateKeyError
 
 from app.domain import (Ambito, Estado, GlossaryEntry, ReadMessage, Translation,
                         normalize_term, now)
@@ -30,6 +33,11 @@ class ReadModelRepository:
     def get(self, message_id: str) -> ReadMessage | None:
         doc = self.collection.find_one({"message_id": message_id}, PROJECTION)
         return ReadMessage(**doc) if doc else None
+
+    def known_ids(self, channel_id: str) -> set[str]:
+        """Ids ya copiados de un canal: la sincronización solo escribe los nuevos."""
+        cursor = self.collection.find({"channel_id": channel_id}, {"_id": 0, "message_id": 1})
+        return {doc["message_id"] for doc in cursor}
 
 
 class GlossaryRepository:
@@ -130,13 +138,61 @@ class TranslationRepository:
         return Translation(**doc) if doc else None
 
 
+class EventRepository:
+    """published_events: registro de los eventos que emitió Ozy.
+
+    Vive en la base propia, así que todas las réplicas ven la misma lista.
+    """
+
+    def __init__(self, collection: Collection):
+        self.collection = collection
+
+    def ensure_indexes(self) -> None:
+        self.collection.create_index("occurred_at")
+
+    def add(self, event: dict) -> None:
+        self.collection.insert_one({**event})  # copia: insert_one agrega _id
+
+    def list(self, limit: int = 500) -> list[dict]:
+        cursor = self.collection.find({}, PROJECTION).sort("occurred_at", ASCENDING)
+        return list(cursor.limit(limit))
+
+
+class LeaseRepository:
+    """leases: exclusión mutua entre réplicas (una sola sincroniza a la vez)."""
+
+    def __init__(self, collection: Collection):
+        self.collection = collection
+
+    def acquire(self, name: str, owner: str, ttl_seconds: int) -> bool:
+        """Toma o renueva el lease si está libre, vencido o ya es propio.
+
+        Si otra réplica lo tiene vigente, el upsert choca con el _id existente
+        (DuplicateKeyError) y se devuelve False.
+        """
+        current = datetime.now(timezone.utc)
+        try:
+            self.collection.update_one(
+                {"_id": name,
+                 "$or": [{"expires_at": {"$lt": current}}, {"owner": owner}]},
+                {"$set": {"owner": owner,
+                          "expires_at": current + timedelta(seconds=ttl_seconds)}},
+                upsert=True)
+            return True
+        except DuplicateKeyError:
+            return False
+
+
 class Repositories:
     def __init__(self, database: Database):
         self.read_model = ReadModelRepository(database.messages_read_model)
         self.glossary = GlossaryRepository(database.glossary_entries)
         self.translations = TranslationRepository(database.translations)
+        self.events = EventRepository(database.published_events)
+        self.leases = LeaseRepository(database.leases)
 
     def ensure_indexes(self) -> None:
         self.read_model.ensure_indexes()
         self.glossary.ensure_indexes()
         self.translations.ensure_indexes()
+        self.events.ensure_indexes()

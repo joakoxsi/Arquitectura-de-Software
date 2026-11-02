@@ -1,0 +1,13 @@
+# Jobs de evidencia. Se aplican por separado (no en cada deploy):
+#   kubectl apply -k demo/ozy/k8s/pruebas            -> e2e + carga
+# Los scripts de k8s/evidencia/ los lanzan de a uno y guardan la salida.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: grupo-ozy            # <- mismo namespace que el overlay curso
+resources:
+  - e2e-job.yaml
+  - carga-job.yaml
+images:
+  - name: ozy
+    newName: ghcr.io/joakoxsi/ozy
+    newTag: latest

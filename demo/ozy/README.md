@@ -27,8 +27,9 @@ Request* para Finanzas. Ozy hace visible esa ambigüedad en vez de esconderla.
 7. [Versionamiento](#versionamiento)
 8. [Flujo completo con curl](#flujo-completo-con-curl)
 9. [Tests](#tests)
-10. [Decisiones y limitaciones](#decisiones-y-limitaciones)
-11. [Uso de IA](#uso-de-ia)
+10. [Despliegue en Kubernetes](#despliegue-en-kubernetes)
+11. [Decisiones y limitaciones](#decisiones-y-limitaciones)
+12. [Uso de IA](#uso-de-ia)
 
 ---
 
@@ -126,13 +127,16 @@ ozy/
 │   ├── repositories.py   # acceso a las 3 colecciones
 │   ├── acl.py            # capa anticorrupción
 │   ├── consumer.py       # consumidor RabbitMQ con reconexión
+│   ├── synchronizer.py   # sin broker: lee mensajes por la API del chat base
 │   ├── publisher.py      # publicación de eventos
 │   ├── detector.py       # detección de términos y candidatos
 │   ├── translator.py     # motor de traducción (glosario + plantillas)
 │   ├── users_client.py   # consulta opcional a users
 │   └── seed.py           # glosario inicial
-├── scripts/e2e.py        # prueba de punta a punta contra el sistema levantado
-└── tests/                # pytest (54 tests)
+├── scripts/e2e.py        # prueba de punta a punta (compose o Job en Kubernetes)
+├── scripts/carga.py      # generador de carga para el HPA
+├── k8s/                  # manifiestos, Jobs de prueba y scripts de evidencia
+└── tests/                # pytest (74 tests)
 ```
 
 ---
@@ -160,6 +164,8 @@ rechazadas en dos o más ámbitos.
 | `messages_read_model` | `message_id`, `channel_id`, `author_id`, `content`, `received_at` | `message_id` |
 | `glossary_entries` | `id`, `term`, `term_normalized`, `definition`, `ambito`, `estado`, `created_at`, `validated_by`, `validated_at` | `id` · (`term_normalized`, `ambito`) |
 | `translations` | `translation_id`, `message_id`, `channel_id`, `audience_level`, `explanation`, `terms[]`, `created_at` | (`message_id`, `audience_level`) |
+| `published_events` | `type`, `subject_id`, `occurred_at`, `data` | — (índice por `occurred_at`) |
+| `leases` | `_id`, `owner`, `expires_at` | `_id` (una sola réplica sincroniza a la vez) |
 
 ### Glosario inicial
 
@@ -202,12 +208,14 @@ Todas las rutas de negocio están bajo `/api/v1`. Los cuerpos son JSON.
 | Método | Ruta | Descripción | Éxito | Errores |
 |---|---|---|---|---|
 | `GET` | `/health` | Health-check | 200 | — |
-| `POST` | `/api/v1/messages/{message_id}/translation` | Traduce un mensaje del read-model | 201 | 404, 422 |
+| `GET` | `/health/live` | Liveness: proceso y consumidor de eventos vivos | 200 | 503 |
+| `GET` | `/health/ready` | Readiness: su MongoDB responde | 200 | 503 |
+| `POST` | `/api/v1/messages/{message_id}/translation` | Traduce un mensaje del read-model. `?channel_id=` opcional: sin broker, sincroniza ese canal en el momento | 201 | 404, 422 |
 | `GET` | `/api/v1/messages/{message_id}/translation` | Traducción guardada (botón «Explícamelo en simple») | 200 | 404, 422 |
 | `GET` | `/api/v1/glossary` | Lista el glosario. Filtros opcionales `?ambito=` y `?estado=` | 200 | 422 |
 | `GET` | `/api/v1/glossary/{term}` | Todas las entradas de un término, por ámbito | 200 | 404 |
 | `PATCH` | `/api/v1/glossary/{entry_id}/validation` | Valida o rechaza una definición | 200 | 404, 409, 422 |
-| `GET` | `/api/v1/events` | Eventos publicados por Ozy (lista en memoria, para explorar localmente) | 200 | — |
+| `GET` | `/api/v1/events` | Eventos publicados por Ozy (últimos 500, guardados en su base: iguales desde cualquier réplica) | 200 | — |
 
 ### `POST /api/v1/messages/{message_id}/translation`
 
@@ -330,7 +338,27 @@ sobre que los servicios base:
 }
 ```
 
-### Consumidos
+### Cómo recibe Ozy los mensajes
+
+| Entorno | Fuente | Cómo |
+|---|---|---|
+| Local (compose) | Broker: `chat.message.created` | Consumidor RabbitMQ (`app/consumer.py`) |
+| Clúster del curso | API pública del chat base | Sincronizador (`app/synchronizer.py`): cada 5 s lee `GET /api/v1/channels` y `GET /api/v1/channels/{id}/messages` |
+
+El `messages` desplegado por el curso no tiene `RABBITMQ_URL`, así que no publica
+eventos. Por eso, en el clúster Ozy arranca con `CONSUME_MESSAGE_EVENTS=false` (o
+sin `RABBITMQ_URL`) y, si tiene `CHANNELS_URL` y `MESSAGES_URL`, usa el
+sincronizador en vez del consumidor. Sus eventos propios los sigue publicando, en
+su RabbitMQ propio ([ADR-004](../docs/decisiones/ADR-004-ingesta-por-api-y-broker-propio.md)). Ambos pasan por la
+**misma capa anticorrupción** y escriben en el **mismo read-model**, así que el
+resto de Ozy no cambia. Con varias réplicas, solo la que tiene el *lease* en
+`leases` sincroniza, para no multiplicar la carga sobre el chat base compartido;
+si esa réplica muere, otra toma el lease al vencer (30 s).
+
+Un mensaje recién creado aparece en el read-model en el siguiente ciclo. Para
+traducirlo al instante, el cliente puede pasar `?channel_id=` en el `POST`.
+
+### Consumidos (con broker)
 
 | Evento | Productor | Cola de Ozy | Efecto |
 |---|---|---|---|
@@ -407,8 +435,9 @@ Se emite solo la primera vez que aparece el término; volver a traducir no lo re
 | `estado` | `validado` \| `rechazado` | Nuevo estado |
 | `validated_by` | string | Quién validó o rechazó |
 
-`GET /api/v1/events` devuelve la lista de eventos publicados desde el último
-arranque, igual que en los servicios base. Es solo para explorar localmente.
+`GET /api/v1/events` devuelve los últimos 500 eventos emitidos por Ozy. Se guardan
+en su base (`published_events`), así que la lista es la misma desde cualquier
+réplica y sobrevive a reinicios.
 
 ---
 
@@ -525,7 +554,7 @@ Si el paso 3 responde `404 Message not found`, Ozy no recibió el evento: revisa
 
 ## Tests
 
-54 tests con pytest. No necesitan Docker: usan MongoDB en memoria (`mongomock`)
+74 tests con pytest. No necesitan Docker: usan MongoDB en memoria (`mongomock`)
 y simulan RabbitMQ y el servicio `users`.
 
 ```bash
@@ -544,6 +573,8 @@ python -m venv .venv
 | `test_consumer.py` | Idempotencia, ack/nack, reencolado, reconexión con backoff, declaración del exchange |
 | `test_publisher_and_users.py` | Publicación al exchange, broker caído, `users` disponible y caído |
 | `test_api.py` | Todos los endpoints, eventos emitidos por transacción y códigos de error |
+| `test_sync.py` | Sincronización por API, idempotencia, canal caído, lease entre réplicas, `?channel_id=`, eventos compartidos |
+| `test_health.py` | Liveness, readiness, cabecera de réplica y reintento de MongoDB al arrancar |
 
 ### Prueba de punta a punta
 
@@ -557,6 +588,25 @@ Recorre el flujo completo con los servicios reales (usuario → canal → mensaj
 evento → traducción → validación → eventos publicados → errores) y verifica cada
 paso. La [guía de ejecución y pruebas](../docs/guia-ejecucion-y-pruebas.md)
 explica los tres niveles de prueba y cómo resolver los problemas más comunes.
+
+---
+
+## Despliegue en Kubernetes
+
+Ozy se despliega en el clúster común del curso, en el namespace del grupo y con
+su propia MongoDB, **sin redesplegar ni modificar el chat base**: como ahí
+`messages` no publica eventos, Ozy lee los mensajes por la API pública de
+`channels` y `messages`, consulta `users` para el nombre del autor y publica sus
+eventos en un RabbitMQ propio. Incluye startup/liveness/readiness probes, HPA
+(2–4 réplicas por CPU, dentro de la cuota del grupo), PDB y un pipeline de GitHub Actions que
+prueba, publica la imagen, despliega y corre una prueba integrada dentro del
+clúster. Toda la guía, y los scripts que generan la evidencia del flujo
+integrado y del escalamiento, están en [k8s/README.md](k8s/README.md). La
+decisión está en
+[ADR-003](../docs/decisiones/ADR-003-despliegue-kubernetes-junto-al-core.md) y
+[ADR-004](../docs/decisiones/ADR-004-ingesta-por-api-y-broker-propio.md).
+
+Cada respuesta HTTP incluye la cabecera `X-Ozy-Instance` con el pod que respondió.
 
 ---
 
@@ -580,8 +630,12 @@ explica los tres niveles de prueba y cómo resolver los problemas más comunes.
 - No detecta plurales ni flexiones: «los PRs» o «los deploys» no se reconocen.
 - Una palabra corta escrita en mayúsculas (por ejemplo «HOY») puede registrarse
   como candidato.
-- No hay *outbox*: si RabbitMQ está caído al publicar, el evento solo queda en la
-  lista local (mismo comportamiento que `messages`).
+- No hay *outbox* completo: si RabbitMQ está caído al publicar, el evento queda
+  registrado en `published_events` pero no se reintenta su envío al broker.
+- En el clúster del curso, un mensaje nuevo tarda hasta un ciclo (5 s) en
+  llegar al read-model, salvo que se pida con `?channel_id=`. El sincronizador
+  relee todos los canales en cada ciclo porque la API de `messages` no permite
+  pedir solo los mensajes nuevos.
 - Los mensajes publicados antes del primer arranque de Ozy no llegan a su cola.
 - Para desambiguar, Ozy muestra todos los significados; no infiere el ámbito a
   partir del canal o del autor.
@@ -626,6 +680,10 @@ El diseño del sistema es del grupo:
 - **Revisión técnica**, como detectar que el evento real de `messages` no tenía
   la forma descrita en la especificación, o el error de serialización de los
   servicios base.
+- **Despliegue en Kubernetes:** manifiestos, probes, HPA, pipeline de GitHub
+  Actions, scripts de evidencia y la ADR-003, a partir del enunciado de la
+  entrega. Se ensayaron en un clúster k3s local con un chat base simulado antes
+  de usarlos en el clúster del curso.
 
 ### Revisión
 

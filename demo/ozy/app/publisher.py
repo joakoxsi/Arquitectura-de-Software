@@ -17,7 +17,7 @@ ENTRY_REJECTED = "chat.glossary.entry.rejected"
 events: list[dict] = []
 
 
-def publish(event_type: str, subject_id: str, data: dict) -> None:
+def publish(event_type: str, subject_id: str, data: dict) -> dict:
     event = {"type": event_type, "subject_id": subject_id,
              "occurred_at": datetime.now(timezone.utc).isoformat(),
              "data": data}
@@ -35,3 +35,4 @@ def publish(event_type: str, subject_id: str, data: dict) -> None:
             # En producción este fallo se tratará con outbox/reintentos.
             logger.warning("Could not publish %s: %s", event_type,
                            error.__class__.__name__)
+    return event

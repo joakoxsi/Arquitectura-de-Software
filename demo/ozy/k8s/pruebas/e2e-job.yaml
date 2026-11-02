@@ -1,0 +1,56 @@
+# Prueba integrada contra el chat base desplegado: crea usuario, canal y mensaje en
+# el core por su API pública, espera a que Ozy consuma chat.message.created desde
+# el broker del curso, traduce, valida un candidato y verifica los eventos de Ozy
+# en el exchange `chat`. Usa la misma imagen de Ozy (trae scripts/e2e.py y pika).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ozy-e2e
+  labels:
+    app.kubernetes.io/name: ozy
+    app.kubernetes.io/component: e2e
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ozy
+        app.kubernetes.io/component: e2e
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: e2e
+          image: ozy
+          command: ["python", "scripts/e2e.py"]
+          env:
+            - name: OZY_URL
+              value: http://ozy:8000
+            - name: RABBITMQ_API   # vacío: no se usa la API de administración
+              value: ""
+            - name: OZY_QUEUE_CHECK   # en el clúster Ozy lee por API: no hay cola que esperar
+              value: "0"
+            # Si hay broker, los eventos se verifican en el exchange; si no, en
+            # /api/v1/events (guardado en la base de Ozy, igual en todas las réplicas).
+            - name: RABBITMQ_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ozy-secrets
+                  key: RABBITMQ_URL
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: ozy-config
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
