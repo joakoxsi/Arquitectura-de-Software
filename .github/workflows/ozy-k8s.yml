@@ -1,19 +1,21 @@
 # CI/CD de Ozy: tests -> imagen en GHCR -> deploy al clúster del curso -> prueba integrada.
 #
 # Configuración (Settings del repo -> Secrets and variables -> Actions):
-#   secrets.KUBECONFIG        kubeconfig con acceso al namespace del grupo
+#   secrets.KUBECONFIG        kubeconfig con acceso al namespace del grupo (texto o base64;
+#                             nunca se versiona, ver .gitignore de la raíz)
 #   secrets.OZY_USERS_URL     URL interna de users     (no se guarda en el repo)
 #   secrets.OZY_CHANNELS_URL  URL interna de channels  (no se guarda en el repo)
 #   secrets.OZY_MESSAGES_URL  URL interna de messages  (no se guarda en el repo)
 #   secrets.OZY_RABBITMQ_PASSWORD  clave del RabbitMQ propio de Ozy (inventarla, larga y al azar)
-#   vars.OZY_NAMESPACE        namespace del grupo (def. grupo-ozy)
-#   vars.CORE_NAMESPACE       opcional: namespace del chat base, solo para listarlo en la evidencia
+#   vars.OZY_NAMESPACE        opcional: namespace del grupo (def. el que trae el kubeconfig)
+#   vars.CORE_NAMESPACE       opcional: namespace del chat base (def. servicios-base), solo para la evidencia
 # Sin KUBECONFIG el workflow igual corre tests y publica la imagen; solo omite el deploy.
+
 name: ozy-k8s
 
 on:
   push:
-    branches: [main]
+    branches: [main, github-actions]
     paths:
       - "demo/ozy/**"
       - ".github/workflows/ozy-k8s.yml"
@@ -28,8 +30,8 @@ on:
         default: false
 
 concurrency:
-  group: ozy-deploy-${{ github.ref }}
-  cancel-in-progress: false   # nunca cortar un deploy a medias
+  group: ozy-deploy   # un solo deploy a la vez al namespace, venga de la rama que venga
+  cancel-in-progress: false # nunca cortar un deploy a medias
 
 env:
   OZY_DIR: demo/ozy
@@ -92,8 +94,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: curso
     env:
-      NS: ${{ vars.OZY_NAMESPACE || 'grupo-ozy' }}
-      CORE_NS: ${{ vars.CORE_NAMESPACE }}
+      # NS se fija en "Configurar acceso al clúster": vars.OZY_NAMESPACE o, si no
+      # está, el namespace que trae el kubeconfig del curso.
+      NS_VAR: ${{ vars.OZY_NAMESPACE }}
+      CORE_NS: ${{ vars.CORE_NAMESPACE || 'servicios-base' }}
       IMAGE: ${{ needs.image.outputs.image }}
       HAS_KUBECONFIG: ${{ secrets.KUBECONFIG != '' }}
     steps:
@@ -105,12 +109,24 @@ jobs:
         if: env.HAS_KUBECONFIG == 'true'
       - name: Configurar acceso al clúster
         if: env.HAS_KUBECONFIG == 'true'
+        env:
+          # Por env y no interpolado en el script: el shell no expande su contenido.
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
         run: |
           mkdir -p ~/.kube
-          printf '%s' "${{ secrets.KUBECONFIG }}" > ~/.kube/config
-          chmod 600 ~/.kube/config
+          umask 077
+          # Acepta el kubeconfig en base64 (recomendado) o en texto plano.
+          if ! { printf '%s' "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config 2>/dev/null \
+                 && grep -q '^apiVersion' ~/.kube/config; }; then
+            printf '%s\n' "$KUBECONFIG_DATA" > ~/.kube/config
+          fi
           kubectl version
+          NS="${NS_VAR:-$(kubectl config view --minify -o jsonpath='{..namespace}')}"
+          [ -n "$NS" ] || { echo "::error::Sin namespace: define vars.OZY_NAMESPACE"; exit 1; }
+          echo "NS=$NS" >> "$GITHUB_ENV"
+          echo "Namespace de despliegue: $NS"
           kubectl auth can-i create deployments -n "$NS"
+          kubectl auth can-i create horizontalpodautoscalers.autoscaling -n "$NS"
       - name: Fijar namespace, imagen (por commit) y direcciones del core
         if: env.HAS_KUBECONFIG == 'true'
         working-directory: demo/ozy/k8s
@@ -154,6 +170,22 @@ jobs:
           kubectl -n "$NS" rollout status deployment/ozy-rabbitmq --timeout=180s
           kubectl -n "$NS" rollout status deployment/ozy --timeout=240s
           kubectl -n "$NS" get deploy,hpa,pods -l app.kubernetes.io/name=ozy -o wide
+      - name: Verificar autoscaling (HPA con métricas)
+        if: env.HAS_KUBECONFIG == 'true'
+        run: |
+          # Sin metrics-server el HPA queda en <unknown> y nunca escala.
+          for i in $(seq 1 24); do
+            CPU=$(kubectl -n "$NS" get hpa ozy -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}')
+            if [ -n "$CPU" ]; then
+              echo "HPA activo: CPU ${CPU}% (objetivo 60%)"
+              kubectl -n "$NS" get hpa ozy
+              exit 0
+            fi
+            sleep 5
+          done
+          kubectl -n "$NS" describe hpa ozy | tail -20
+          echo "::error::El HPA no recibe métricas de CPU (¿falta metrics-server?)"
+          exit 1
       - name: Diagnóstico si el rollout falla
         if: failure() && env.HAS_KUBECONFIG == 'true'
         run: |
