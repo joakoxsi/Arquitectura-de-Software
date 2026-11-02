@@ -102,7 +102,7 @@ jobs:
       HAS_KUBECONFIG: ${{ secrets.KUBECONFIG != '' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Sin KUBECONFIG no hay deploy
+      - name: Aviso si falta secrets.KUBECONFIG (se salta si existe)
         if: env.HAS_KUBECONFIG != 'true'
         run: echo "::warning::Falta secrets.KUBECONFIG; se omite el deploy."
       - uses: azure/setup-kubectl@v4
@@ -199,11 +199,11 @@ jobs:
       - name: Prueba integrada contra el chat base
         if: env.HAS_KUBECONFIG == 'true'
         run: |
-          NS="$NS" CORE_NS="$CORE_NS" "$OZY_DIR/k8s/evidencia/flujo-integrado.sh"
+          NS="$NS" CORE_NS="$CORE_NS" bash "$OZY_DIR/k8s/evidencia/flujo-integrado.sh"
           grep -q "FLUJO INTEGRADO OK" "$OZY_DIR"/k8s/evidencia/salida/*-flujo/resumen.txt
       - name: Prueba de escalamiento (HPA)
         if: env.HAS_KUBECONFIG == 'true' && github.event_name == 'workflow_dispatch' && inputs.escalamiento
-        run: NS="$NS" "$OZY_DIR/k8s/evidencia/escalamiento.sh"
+        run: NS="$NS" bash "$OZY_DIR/k8s/evidencia/escalamiento.sh"
       - name: Guardar evidencia
         if: always() && env.HAS_KUBECONFIG == 'true'
         uses: actions/upload-artifact@v4
