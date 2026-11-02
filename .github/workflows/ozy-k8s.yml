@@ -115,11 +115,15 @@ jobs:
         run: |
           mkdir -p ~/.kube
           umask 077
-          # Acepta el kubeconfig en base64 (recomendado) o en texto plano.
-          if ! { printf '%s' "$KUBECONFIG_DATA" | base64 -d > ~/.kube/config 2>/dev/null \
-                 && grep -q '^apiVersion' ~/.kube/config; }; then
+          # Acepta el kubeconfig en base64 (recomendado) o en texto plano, YAML o JSON.
+          # La validación la hace kubectl, que entiende ambos formatos.
+          valid() { kubectl config view > /dev/null 2>&1 && [ -n "$(kubectl config current-context 2>/dev/null)" ]; }
+          printf '%s' "$KUBECONFIG_DATA" | tr -d ' \r\n' | base64 -d > ~/.kube/config 2>/dev/null || true
+          if ! valid; then
             printf '%s\n' "$KUBECONFIG_DATA" > ~/.kube/config
           fi
+          valid || { echo "::error::secrets.KUBECONFIG no es un kubeconfig válido (ni en base64 ni en texto)"; exit 1; }
+          echo "Contexto: $(kubectl config current-context)"
           kubectl version
           NS="${NS_VAR:-$(kubectl config view --minify -o jsonpath='{..namespace}')}"
           [ -n "$NS" ] || { echo "::error::Sin namespace: define vars.OZY_NAMESPACE"; exit 1; }
