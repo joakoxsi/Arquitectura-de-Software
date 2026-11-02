@@ -21,6 +21,10 @@ los grupos.
 1. **Ozy vive en el namespace del grupo** con todo lo que le pertenece:
    Deployment, Service, HPA, PDB, ConfigMap, Secret y **su propia MongoDB**
    (StatefulSet con PVC, accesible solo desde los pods de Ozy por NetworkPolicy).
+   En el clúster del curso el rol del grupo no puede crear PDB ni NetworkPolicy:
+   el overlay `curso` los quita y el aislamiento entre grupos lo da la
+   NetworkPolicy del curso `conexiones-del-grupo` (solo admite tráfico del mismo
+   namespace, de `infraestructura` y de `servicios-base`).
    Se aplica con kustomize (`demo/ozy/k8s/overlays/curso`), que solo contiene
    recursos de Ozy: el pipeline no puede tocar el core aunque quisiera.
 2. **Integración solo por interfaces públicas del core.** En el clúster,

@@ -1,0 +1,7 @@
+# Credenciales de Kubernetes: nunca se versionan (el CI las lee de secrets.KUBECONFIG)
+kubeconfig*
+*.kubeconfig
+.kube/
+*.b64
+**/core.env
+.env
