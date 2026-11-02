@@ -38,7 +38,7 @@ flowchart LR
 
 | Ruta                                                                               | Qué es                                                                                                                                                       |
 | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `base/`                                                                            | Deployment (probes, recursos, seguridad), Service, HPA, PDB, ConfigMap, MongoDB propia (StatefulSet) y RabbitMQ propio (Deployment), ambos con NetworkPolicy |
+| `base/`                                                                            | Deployment (probes, recursos, seguridad), Service, HPA, PDB, ConfigMap, MongoDB propia (StatefulSet) y RabbitMQ propio (Deployment), ambos con NetworkPolicy. El overlay `curso` quita el PDB y las NetworkPolicies (ver abajo) |
 | `overlays/curso/`                                                                  | Ajustes del clúster del curso: namespace, imagen y direcciones del core (`core.env`, **no versionado**; plantilla en `core.env.example`)                     |
 | `pruebas/`                                                                         | Jobs de evidencia: `ozy-e2e` (flujo integrado) y `ozy-carga` (carga para el HPA)                                                                             |
 | `evidencia/`                                                                       | Scripts que lanzan los Jobs y guardan la evidencia en `evidencia/salida/`                                                                                    |
@@ -65,7 +65,7 @@ todos los clústeres gestionados y en k3s):
 
 | Parámetro | Valor                                | Motivo                                                                                                      |
 | --------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| Réplicas  | mín. 2, máx. 4                       | 2 para tolerar la caída de un pod (con PDB `minAvailable: 1`); 4 es lo que cabe en la cuota junto al broker |
+| Réplicas  | mín. 2, máx. 4                       | 2 para tolerar la caída de un pod (el PDB `minAvailable: 1` solo se aplica fuera del clúster del curso); 4 es lo que cabe en la cuota junto al broker |
 | Objetivo  | 60 % de `requests.cpu` (50m)         | Escala antes de saturar el límite de 200m                                                                   |
 | Subida    | hasta +2 pods cada 30 s, sin ventana | Reacciona rápido a un pico                                                                                  |
 | Bajada    | −1 pod cada 30 s tras 120 s estable  | Evita oscilaciones y deja ver la bajada en la prueba                                                        |
@@ -103,6 +103,19 @@ Escalar varias réplicas es seguro porque Ozy ya era _stateless_ en la API:
 
 - los eventos emitidos se guardan en la base propia (`published_events`), así que
   `GET /api/v1/events` responde lo mismo desde cualquier réplica.
+
+### Permisos del clúster del curso
+
+El rol del grupo no puede crear `PodDisruptionBudget` ni `NetworkPolicy`
+(`kubectl auth can-i --list`), así que el overlay `curso` los quita con
+`$patch: delete`. La base los conserva para un clúster propio. El aislamiento
+lo da la NetworkPolicy del curso `conexiones-del-grupo`: solo admite tráfico del
+mismo namespace, de `infraestructura` y de las APIs de `servicios-base`, por lo
+que otros grupos no llegan a MongoDB ni a RabbitMQ de Ozy.
+
+El namespace exige PodSecurity `baseline` y avisa con `restricted`: los cuatro
+contenedores (Ozy, MongoDB, RabbitMQ y los Jobs) corren sin root y sin
+capabilities, así que cumplen `restricted` sin avisos.
 
 ## Puesta en marcha (una vez)
 
