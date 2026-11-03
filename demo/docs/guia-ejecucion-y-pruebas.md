@@ -178,3 +178,9 @@ publicar `chat.message.created`. Está corregido; la causa y la corrección est�
 en la [ADR-002](decisiones/ADR-002-correccion-serializacion-servicios-base.md).
 Si vuelve a aparecer un `500` al crear, confirma que tienes la última versión del
 repositorio (`git pull`) y reconstruye con `docker compose up --build`.
+
+## Evidencias de ejecución
+<img width="1101" height="283" alt="image" src="https://github.com/user-attachments/assets/68b770d3-6cf4-42b2-b175-3b175c1886b2" />
+<img width="929" height="395" alt="image" src="https://github.com/user-attachments/assets/6bf0dc9c-3d5f-4ed8-81d2-00217fb8169f" />
+
+
