@@ -25,7 +25,7 @@ section() { printf '\n===== %s — %s =====\n' "$1" "$(date -Is)"; }
   kubectl config current-context
   kubectl version 2>/dev/null | head -2
   section "Recursos de Ozy en $NS"
-  k get deploy,sts,svc,hpa,pdb -l app.kubernetes.io/name=ozy -o wide
+  k get deploy,sts,svc,hpa -l app.kubernetes.io/name=ozy -o wide
   section "Pods de Ozy"
   k get pods -l app.kubernetes.io/name=ozy -o wide
   section "Imagen desplegada"

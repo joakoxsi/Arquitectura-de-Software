@@ -18,3 +18,27 @@ configMapGenerator:
       - core.env
 generatorOptions:
   disableNameSuffixHash: true
+# El rol del grupo en el clúster del curso no puede crear PodDisruptionBudgets ni
+# NetworkPolicies (`kubectl auth can-i --list`). Se quitan solo aquí; la base los
+# conserva para clústeres propios. El aislamiento lo da la NetworkPolicy del curso
+# `conexiones-del-grupo`: solo entran pods del mismo namespace, `infraestructura`
+# y `servicios-base`, así que otros grupos no llegan a MongoDB ni a RabbitMQ.
+patches:
+  - patch: |-
+      $patch: delete
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: ozy
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: ozy-mongodb
+  - patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: ozy-rabbitmq

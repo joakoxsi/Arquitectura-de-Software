@@ -10,6 +10,10 @@ independientes, cada uno dueño de sus datos:
 | `channels` | 8002 | Crear y consultar canales |
 | `messages` | 8003 | Crear y listar mensajes |
 | `ozy` | 8004 | Traducir jerga técnica a lenguaje simple (ver [ozy/README.md](ozy/README.md)) |
+| `gateway` | 8080 | API Gateway **GraphQL** (`/graphql`, con GraphiQL): único punto de entrada de la interfaz (ver [gateway/README.md](gateway/README.md)) |
+| `frontend` | 3000 | Interfaz web (React) servida por nginx; `/graphql` va al gateway |
+| `search` / `search-indexer` | 8005 | Búsqueda con Elasticsearch (capacidad de otro grupo, imagen `ghcr.io/mochytk/busqueda-search`) |
+| `summaries` | 8006 | Resúmenes de canales con LLM (capacidad de otro grupo, imagen `ghcr.io/marcel-silva27/summaries-service`) |
 | `rabbitmq` | 5672 / 15672 | Broker de eventos (exchange `chat`) |
 
 La documentación OpenAPI de cada servicio está disponible en
@@ -30,3 +34,59 @@ eventos de los servicios base; no debe leer ni escribir el estado de `users`,
 Cada servicio expone `GET /api/v1/events` solo para explorar su contrato
 localmente. En las unidades de implementación se sustituye por un consumidor de
 broker.
+
+## Búsqueda de mensajes (Elasticsearch)
+
+La búsqueda es la capacidad «Motor de búsqueda avanzada» de otro grupo
+([repo](https://github.com/Mochytk/INF326-Arquitectura-de-Software_Tareas/tree/main/Tarea_Unidad_5_Despliegue)).
+No se copia su código: en local se usa su imagen pública, y su indexador lee
+nuestro core por polling de las APIs públicas (igual que en el clúster).
+
+La interfaz solo habla con el gateway (query GraphQL `searchMessages`), que reenvía a
+`search` y agrega el nombre del autor y del canal a cada resultado. Equivalencia con la
+API REST de compatibilidad:
+
+| Gateway | Servicio `search` |
+| --- | --- |
+| `GET /api/search/messages` | `GET /api/v1/search/messages` |
+| `GET /api/channels/{id}/messages/search` | `GET /api/v1/channels/{id}/messages/search` |
+
+Filtros: `content`, `channel_id`, `author_id`, `has` (`link`, `mention`),
+`min_date`/`max_date`, `sort_by` (`timestamp`, `relevance`), `sort_order`, `limit`, `offset`.
+
+**En el clúster del curso** su `search` vive en `grupo-busqueda-avanzada` y la
+NetworkPolicy `conexiones-del-grupo` no deja entrar tráfico desde otros namespaces,
+así que el gateway llega por su Ingress de Traefik. Mientras ese Ingress use el host
+provisional `busqueda.example.com` (sin DNS), se configura:
+
+```
+SEARCH_URL=http://134.199.176.3        # IP del LoadBalancer de Traefik
+SEARCH_HOST=busqueda.example.com       # Host que espera su Ingress
+```
+
+Cuando tengan un host real, basta `SEARCH_URL=http://<host>` y quitar `SEARCH_HOST`.
+
+## Resúmenes de canales (LLM)
+
+Capacidad de otro grupo ([repo](https://github.com/marcel-silva27/summaries-service)),
+usada con su imagen pública. Lee el core solo por sus APIs y trae su propia MongoDB y
+RabbitMQ (`summaries-mongodb`, `summaries-rabbitmq`). Es asíncrono: se pide el
+resumen (202 + `summary_id`) y la interfaz consulta hasta `completada` o `fallida`.
+
+| Gateway | Servicio `summaries` |
+| --- | --- |
+| `POST /api/channels/{id}/summaries` | `POST /api/v1/channels/{id}/summaries` (cuerpo opcional `{user_id, timeInterval: {start, end}}`) |
+| `GET /api/channels/{id}/summaries` | `GET /api/v1/channels/{id}/summaries` |
+| `GET /api/channels/{id}/summaries/latest` | `GET /api/v1/channels/{id}/summaries/latest` |
+| `GET /api/summaries/{id}` | `GET /api/v1/summaries/{id}` |
+
+En la interfaz: botón **✦ Resumir** en cada canal → «Lo nuevo» (mensajes aún no
+resumidos) o «Por fechas», con el historial de resúmenes del canal.
+
+Por defecto corre con el proveedor `mock` (respuestas simuladas, sin API key). Para
+usar Gemini, crear `demo/.env` (no se versiona) con:
+
+```
+SUMMARIES_LLM_PROVIDER=gemini
+LLM_API_KEY=<tu key de Gemini>
+```

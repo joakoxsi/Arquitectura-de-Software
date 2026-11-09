@@ -59,8 +59,12 @@ spec:
         app.kubernetes.io/part-of: chat
     spec:
       hostname: ozy-rabbitmq   # nombre de nodo estable (rabbit@ozy-rabbitmq)
+      # Cumple PodSecurity "restricted" (el namespace del curso avisa con warn=restricted).
       securityContext:
-        fsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 100      # usuario rabbitmq de la imagen alpine oficial
+        runAsGroup: 101
+        fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -104,6 +108,10 @@ spec:
             - name: config
               mountPath: /etc/rabbitmq/conf.d/90-ozy.conf
               subPath: 90-ozy.conf
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
       volumes:
         - name: data
           emptyDir: {}
