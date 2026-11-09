@@ -1,4 +1,6 @@
-// Cliente del API Gateway. La interfaz no conoce ningún otro servicio.
+// Cliente del API Gateway (GraphQL en /graphql). La interfaz no conoce ningún otro servicio.
+// Las consultas usan alias (`display_name: displayName`) para que las respuestas tengan la
+// misma forma que los tipos de abajo.
 
 export interface User { id: string; display_name: string }
 export interface Channel { id: string; name: string }
@@ -92,94 +94,146 @@ export interface Summary {
   updated_at: string;
 }
 
-/** 202 del servicio de búsqueda: el índice aún se está construyendo. */
+/** La búsqueda aún construye su índice (`ready: false`): reintentar más tarde. */
 export class IndexNotReady extends Error {}
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+interface GraphQLError { message: string; extensions?: { status?: number; code?: string } }
+
+/** Ejecuta una operación GraphQL. Un error de un servicio llega con su código HTTP en
+ *  `extensions.status` (ej. 404), que se conserva en ApiError.status. */
+async function gql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, {
-      method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+    response = await fetch("/graphql", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables }),
     });
   } catch {
     throw new ApiError(0, "No se pudo contactar al API Gateway");
   }
-  if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const data = await response.json();
-      detail = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-    } catch { /* respuesta sin JSON */ }
-    throw new ApiError(response.status, detail);
+  let payload: { data?: T; errors?: GraphQLError[] };
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ApiError(response.status, response.statusText || "Respuesta inválida del Gateway");
   }
-  // Solo la búsqueda usa 202 como "aún no"; en resúmenes 202 es "solicitud aceptada".
-  if (response.status === 202 && path.includes("search")) throw new IndexNotReady("Índice en construcción");
-  return response.json() as Promise<T>;
+  if (payload.errors?.length) {
+    const [error] = payload.errors;
+    throw new ApiError(error.extensions?.status ?? 400, error.message);
+  }
+  if (!response.ok || !payload.data) throw new ApiError(response.status, response.statusText);
+  return payload.data;
 }
 
-function searchQuery(p: SearchParams): string {
-  const q = new URLSearchParams();
-  for (const [key, value] of Object.entries(p)) {
-    if (key === "channel_id" || value === undefined || value === "") continue;
-    if (Array.isArray(value)) value.forEach((v) => q.append(key, v));
-    else q.append(key, String(value));
-  }
-  const s = q.toString();
-  return s ? `?${s}` : "";
-}
-
-const qs = (params: Record<string, string | undefined>) => {
-  const entries = Object.entries(params).filter(([, v]) => v) as [string, string][];
-  return entries.length ? `?${new URLSearchParams(entries)}` : "";
-};
+const USER = "id display_name: displayName";
+const MESSAGE = `id channel_id: channelId author_id: authorId author_name: authorName
+  content created_at: createdAt`;
+const TRANSLATION = `translation_id: translationId message_id: messageId
+  audience_level: audienceLevel explanation
+  terms { term known ambiguous meanings { entry_id: entryId ambito definition estado } }`;
+const ENTRY = `id term definition ambito estado created_at: createdAt
+  validated_by: validatedBy validated_at: validatedAt`;
+const HIT = `id channel_id: channelId channel_name: channelName author_id: authorId
+  author_name: authorName content created_at: createdAt has highlights`;
+const SUMMARY = `id channel_id: channelId requested_by: requestedBy messageState
+  timeInterval { start end } content error created_at: createdAt updated_at: updatedAt
+  structured { overview decisions events { description when } tasks { description assignee } }`;
 
 export const api = {
-  health: () => request<Record<string, string>>("GET", "/health"),
+  health: async () => {
+    const data = await gql<{ health: { service: string; status: string }[] }>(
+      "query Health { health { service status } }");
+    return Object.fromEntries(data.health.map((s) => [s.service, s.status]));
+  },
 
-  createUser: (display_name: string) => request<User>("POST", "/users", { display_name }),
-  getUser: (id: string) => request<User>("GET", `/users/${id}`),
+  createUser: async (displayName: string) =>
+    (await gql<{ createUser: User }>(
+      `mutation CreateUser($displayName: String!) { createUser(displayName: $displayName) { ${USER} } }`,
+      { displayName })).createUser,
+  getUser: async (id: string) =>
+    (await gql<{ user: User }>(`query User($id: ID!) { user(id: $id) { ${USER} } }`, { id })).user,
 
-  listChannels: () => request<Channel[]>("GET", "/channels"),
-  createChannel: (name: string) => request<Channel>("POST", "/channels", { name }),
+  listChannels: async () =>
+    (await gql<{ channels: Channel[] }>("query Channels { channels { id name } }")).channels,
+  createChannel: async (name: string) =>
+    (await gql<{ createChannel: Channel }>(
+      "mutation CreateChannel($name: String!) { createChannel(name: $name) { id name } }",
+      { name })).createChannel,
 
-  listMessages: (channelId: string) =>
-    request<Message[]>("GET", `/channels/${channelId}/messages`),
-  sendMessage: (channelId: string, author_id: string, content: string) =>
-    request<Message>("POST", `/channels/${channelId}/messages`, { author_id, content }),
+  listMessages: async (channelId: string) =>
+    (await gql<{ messages: Message[] }>(
+      `query Messages($channelId: ID!) { messages(channelId: $channelId) { ${MESSAGE} } }`,
+      { channelId })).messages,
+  sendMessage: async (channelId: string, authorId: string, content: string) =>
+    (await gql<{ sendMessage: Message }>(
+      `mutation SendMessage($channelId: ID!, $authorId: ID!, $content: String!) {
+        sendMessage(channelId: $channelId, authorId: $authorId, content: $content) { ${MESSAGE} }
+      }`, { channelId, authorId, content })).sendMessage,
 
-  translate: (messageId: string, channelId: string, audience_level: AudienceLevel) =>
-    request<Translation>(
-      "POST",
-      `/messages/${messageId}/translation${qs({ channel_id: channelId })}`,
-      { audience_level },
-    ),
+  translate: async (messageId: string, channelId: string, audienceLevel: AudienceLevel) =>
+    (await gql<{ translateMessage: Translation }>(
+      `mutation Translate($messageId: ID!, $channelId: ID, $audienceLevel: AudienceLevel!) {
+        translateMessage(messageId: $messageId, channelId: $channelId,
+                         audienceLevel: $audienceLevel) { ${TRANSLATION} }
+      }`, { messageId, channelId, audienceLevel })).translateMessage,
 
-  // Un canal usa la ruta por canal (el servicio enruta al shard de ese canal).
-  searchMessages: (p: SearchParams) =>
-    request<SearchResult>(
-      "GET",
-      p.channel_id
-        ? `/channels/${p.channel_id}/messages/search${searchQuery(p)}`
-        : `/search/messages${searchQuery(p)}`,
-    ),
+  searchMessages: async (p: SearchParams) => {
+    const { searchMessages: result } = await gql<{
+      searchMessages: SearchResult & { ready: boolean };
+    }>(
+      `query Search($content: String, $channelId: ID, $authorIds: [ID!], $has: [HasFilter!],
+                    $minDate: String, $maxDate: String, $sortBy: SortBy, $sortOrder: SortOrder,
+                    $limit: Int, $offset: Int) {
+        searchMessages(content: $content, channelId: $channelId, authorIds: $authorIds,
+                       has: $has, minDate: $minDate, maxDate: $maxDate, sortBy: $sortBy,
+                       sortOrder: $sortOrder, limit: $limit, offset: $offset) {
+          ready total_results: totalResults messages { ${HIT} }
+        }
+      }`,
+      {
+        content: p.content || undefined, channelId: p.channel_id,
+        authorIds: p.author_id ? [p.author_id] : undefined, has: p.has,
+        minDate: p.min_date, maxDate: p.max_date, sortBy: p.sort_by, sortOrder: p.sort_order,
+        limit: p.limit, offset: p.offset,
+      });
+    if (!result.ready) throw new IndexNotReady("Índice en construcción");
+    return result as SearchResult;
+  },
 
-  requestSummary: (channelId: string, body: { user_id?: string; timeInterval?: TimeInterval }) =>
-    request<{ summary_id: string; messageState: SummaryState }>(
-      "POST", `/channels/${channelId}/summaries`, body),
-  getSummary: (summaryId: string) => request<Summary>("GET", `/summaries/${summaryId}`),
-  listSummaries: (channelId: string) =>
-    request<Summary[]>("GET", `/channels/${channelId}/summaries?limit=20`),
+  requestSummary: async (channelId: string, body: { user_id?: string; timeInterval?: TimeInterval }) =>
+    (await gql<{ requestSummary: { summary_id: string; messageState: SummaryState } }>(
+      `mutation RequestSummary($channelId: ID!, $userId: ID, $timeInterval: TimeIntervalInput) {
+        requestSummary(channelId: $channelId, userId: $userId, timeInterval: $timeInterval) {
+          summary_id: summaryId messageState
+        }
+      }`, { channelId, userId: body.user_id, timeInterval: body.timeInterval })).requestSummary,
+  getSummary: async (summaryId: string) =>
+    (await gql<{ summary: Summary }>(
+      `query Summary($id: ID!) { summary(id: $id) { ${SUMMARY} } }`, { id: summaryId })).summary,
+  listSummaries: async (channelId: string) =>
+    (await gql<{ summaries: Summary[] }>(
+      `query Summaries($channelId: ID!) { summaries(channelId: $channelId, limit: 20) { ${SUMMARY} } }`,
+      { channelId })).summaries,
 
-  listGlossary: (ambito?: Ambito, estado?: Estado) =>
-    request<GlossaryEntry[]>("GET", `/glossary${qs({ ambito, estado })}`),
-  validateEntry: (
+  listGlossary: async (ambito?: Ambito, estado?: Estado) =>
+    (await gql<{ glossary: GlossaryEntry[] }>(
+      `query Glossary($ambito: Ambito, $estado: Estado) {
+        glossary(ambito: $ambito, estado: $estado) { ${ENTRY} }
+      }`, { ambito, estado })).glossary,
+  validateEntry: async (
     entryId: string,
     body: { estado: "validado" | "rechazado"; validated_by: string; definition?: string; ambito?: Ambito },
-  ) => request<GlossaryEntry>("PATCH", `/glossary/${entryId}/validation`, body),
+  ) =>
+    (await gql<{ validateGlossaryEntry: GlossaryEntry }>(
+      `mutation Validate($entryId: ID!, $estado: Decision!, $validatedBy: ID!,
+                         $definition: String, $ambito: Ambito) {
+        validateGlossaryEntry(entryId: $entryId, estado: $estado, validatedBy: $validatedBy,
+                              definition: $definition, ambito: $ambito) { ${ENTRY} }
+      }`, { entryId, estado: body.estado, validatedBy: body.validated_by,
+            definition: body.definition, ambito: body.ambito })).validateGlossaryEntry,
 };

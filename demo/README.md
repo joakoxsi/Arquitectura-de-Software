@@ -10,8 +10,8 @@ independientes, cada uno dueño de sus datos:
 | `channels` | 8002 | Crear y consultar canales |
 | `messages` | 8003 | Crear y listar mensajes |
 | `ozy` | 8004 | Traducir jerga técnica a lenguaje simple (ver [ozy/README.md](ozy/README.md)) |
-| `gateway` | 8080 | API Gateway: único punto de entrada de la interfaz |
-| `frontend` | 3000 | Interfaz web (React) servida por nginx; `/api` va al gateway |
+| `gateway` | 8080 | API Gateway **GraphQL** (`/graphql`, con GraphiQL): único punto de entrada de la interfaz (ver [gateway/README.md](gateway/README.md)) |
+| `frontend` | 3000 | Interfaz web (React) servida por nginx; `/graphql` va al gateway |
 | `search` / `search-indexer` | 8005 | Búsqueda con Elasticsearch (capacidad de otro grupo, imagen `ghcr.io/mochytk/busqueda-search`) |
 | `summaries` | 8006 | Resúmenes de canales con LLM (capacidad de otro grupo, imagen `ghcr.io/marcel-silva27/summaries-service`) |
 | `rabbitmq` | 5672 / 15672 | Broker de eventos (exchange `chat`) |
@@ -42,8 +42,9 @@ La búsqueda es la capacidad «Motor de búsqueda avanzada» de otro grupo
 No se copia su código: en local se usa su imagen pública, y su indexador lee
 nuestro core por polling de las APIs públicas (igual que en el clúster).
 
-La interfaz solo habla con el gateway, que reenvía a `search` y agrega el nombre del
-autor y del canal a cada resultado:
+La interfaz solo habla con el gateway (query GraphQL `searchMessages`), que reenvía a
+`search` y agrega el nombre del autor y del canal a cada resultado. Equivalencia con la
+API REST de compatibilidad:
 
 | Gateway | Servicio `search` |
 | --- | --- |

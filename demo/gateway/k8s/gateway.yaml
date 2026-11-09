@@ -1,0 +1,84 @@
+# API Gateway (GraphQL + REST): único punto de entrada de la interfaz web.
+# Sin estado propio, así que no necesita base de datos ni volumen.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: chat
+spec:
+  replicas: 1   # el HPA es de Ozy; la cuota del grupo no da para escalar todo
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+        app.kubernetes.io/part-of: chat
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: gateway   # el overlay lo reemplaza por la imagen publicada por el CI
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: OZY_URL
+              value: http://ozy:8000
+          # USERS_URL, CHANNELS_URL y MESSAGES_URL (y, si existen, SEARCH_URL,
+          # SEARCH_HOST y SUMMARIES_URL): el mismo ConfigMap que arma el CI desde
+          # secrets, así las direcciones del core no quedan en el repo.
+          envFrom:
+            - configMapRef:
+                name: ozy-config
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+          # /health no consulta a otros servicios: si users u Ozy caen, reiniciar el
+          # gateway no lo arregla, y GraphQL ya devuelve el error por campo.
+          startupProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 3
+            failureThreshold: 20
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/part-of: chat
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

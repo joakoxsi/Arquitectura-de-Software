@@ -4,6 +4,11 @@ Despliegue de Ozy en el clúster común del curso, **junto al chat base ya
 desplegado y sin modificarlo**. Ozy vive en el namespace del grupo, trae su propia
 MongoDB y solo se conecta al core por sus APIs públicas.
 
+En el mismo namespace y con el mismo pipeline se despliegan también el
+**API Gateway** (`demo/gateway`, GraphQL + REST) y la **interfaz web**
+(`demo/frontend`, React servido por nginx). Ver
+[Gateway e interfaz web](#gateway-e-interfaz-web).
+
 En el clúster del curso, el chat base (`servicios-base`) **no tiene broker**: su
 `messages` no publica `chat.message.created`. Por eso:
 
@@ -28,7 +33,11 @@ flowchart LR
         D -->|"chat.translation.created<br/>chat.glossary.*"| R[("ozy-rabbitmq<br/>exchange chat")]
         J1[Job ozy-e2e] -.-> S
         J2[Job ozy-carga] -.-> S
+        FE["frontend (nginx)"] -->|"/graphql, /api/"| GW[gateway]
+        GW --> S
     end
+    ING{{"Ingress (opcional)<br/>vars.INGRESS_HOST"}} --> FE
+    GW -.->|REST| U & C & M
     D -->|"cada 5 s, 1 réplica (lease)<br/>GET /channels, GET /channels/id/messages"| C & M
     D -.->|GET /users/id| U
     J1 -.->|crea usuario, canal, mensaje| U & C & M
@@ -81,8 +90,13 @@ dimensionado para caber **en el peor caso**, con la carga corriendo:
 | Ozy al máximo   | 4          | 200m / 384Mi                | 800m / 768Mi                  |
 | MongoDB propia  | 1          | 100m / 192Mi                | 250m / 448Mi                  |
 | RabbitMQ propio | 1          | 100m / 128Mi                | 250m / 320Mi                  |
-| Job de carga    | 2          | 100m / 128Mi                | 400m / 192Mi                  |
-| **Total**       | **8 / 10** | **500m / 832Mi** de 1 / 1Gi | **1700m / 1728Mi** de 2 / 2Gi |
+| API Gateway     | 1          | 50m / 96Mi                  | 200m / 192Mi                  |
+| Interfaz web    | 1          | 25m / 32Mi                  | 100m / 64Mi                   |
+| Job de carga    | 1          | 50m / 64Mi                  | 200m / 96Mi                   |
+| **Total**       | **9 / 10** | **525m / 896Mi** de 1 / 1Gi | **1800m / 1888Mi** de 2 / 2Gi |
+
+Con el gateway y la interfaz en el namespace, el Job de carga usa **un** generador
+(24 hilos) en vez de dos: basta para llevar Ozy a 4 réplicas y deja un pod libre.
 
 RabbitMQ no usa volumen: la cuota permite un solo PVC (es de MongoDB) y el registro
 durable de los eventos ya está en MongoDB (`published_events`).
@@ -136,26 +150,40 @@ capabilities, así que cumplen `restricted` sin avisos.
    | Variable | `OZY_NAMESPACE`         | opcional: namespace del grupo. Si no se define, se usa el que trae el kubeconfig |
    | Variable | `CORE_NAMESPACE`        | opcional: namespace del chat base (por defecto `servicios-base`), para la evidencia |
 
-3. **Imagen pública.** Tras el primer push a `main`, en GitHub → Packages → `ozy`
-   → Package settings, cambiar la visibilidad a _Public_ para que el clúster pueda
-   descargarla sin credenciales. (Alternativa: crear un `imagePullSecret` y
-   referenciarlo en el Deployment.)
+   Opcionales (gateway e interfaz):
+
+   | Tipo     | Nombre               | Valor                                                                                      |
+   | -------- | -------------------- | ------------------------------------------------------------------------------------------ |
+   | Secret   | `OZY_SEARCH_URL`     | URL con la que el gateway llega a la búsqueda de otro grupo (vía el controlador de Ingress) |
+   | Secret   | `OZY_SEARCH_HOST`    | `Host` del Ingress de búsqueda, si su DNS aún no existe                                     |
+   | Secret   | `OZY_SUMMARIES_URL`  | URL de los resúmenes de otro grupo                                                          |
+   | Variable | `INGRESS_HOST`       | host público de la interfaz. Sin él no se crea Ingress (se usa `port-forward`)              |
+   | Variable | `INGRESS_CLASS`      | IngressClass del clúster (por defecto `traefik`)                                            |
+
+3. **Imágenes públicas.** Tras el primer push a `main`, en GitHub → Packages,
+   cambiar a _Public_ los paquetes `ozy`, `ozy-gateway` y `ozy-frontend` (Package
+   settings → Change visibility) para que el clúster pueda descargarlos sin
+   credenciales. (Alternativa: un `imagePullSecret` referenciado en los Deployments.)
 
 ## Integración continua
 
-El despliegue se hace **solo por GitHub Actions**. Ozy no tiene URL pública: el
-Service es `ClusterIP` y no hay Ingress, así que solo se llega a él desde dentro
-del clúster (las pruebas corren como Jobs).
+El despliegue se hace **solo por GitHub Actions**. Ozy no tiene URL pública: su
+Service es `ClusterIP` y las pruebas corren como Jobs dentro del clúster. Lo único
+expuesto hacia afuera es la interfaz web, y solo si se define `vars.INGRESS_HOST`.
 
-Cada push a `main` o `github-actions` que toque `demo/ozy/**` ejecuta
+Cada push a `main` o `github-actions` que toque `demo/ozy/**`, `demo/gateway/**` o
+`demo/frontend/**` ejecuta
 [`ozy-k8s.yml`](../../../.github/workflows/ozy-k8s.yml):
 
-1. **test** — 74 tests con pytest y render de los manifiestos con kustomize.
-2. **image** — construye y publica `ghcr.io/<owner>/ozy:<sha>` y `:latest`.
+1. **test** — 74 tests de Ozy y 23 del gateway con pytest, compilación de la
+   interfaz (`npm run build`) y render de los manifiestos con kustomize.
+2. **image** — construye y publica 3 imágenes, `ghcr.io/<owner>/{ozy,ozy-gateway,ozy-frontend}`,
+   con tag `<sha>` y `:latest`.
 3. **deploy** — fija namespace e imagen `<sha>`, arma `core.env` desde los
    secrets (solo en el runner, sin imprimirlo); crea/actualiza el
    Secret `ozy-secrets` (usuario/clave del broker y `RABBITMQ_URL`);
-   `kubectl apply -k overlays/curso`; espera el rollout de MongoDB, RabbitMQ y Ozy
+   `kubectl apply -k overlays/curso`; espera el rollout de MongoDB, RabbitMQ, Ozy,
+   gateway e interfaz; si hay `vars.INGRESS_HOST`, aplica el Ingress
    (`maxUnavailable: 0`, así que nunca baja la capacidad durante un deploy) y
    comprueba que el HPA reciba métricas de CPU (si no, falla: falta metrics-server).
 4. **prueba integrada** — corre `evidencia/flujo-integrado.sh`; si falla, el
@@ -163,6 +191,33 @@ Cada push a `main` o `github-actions` que toque `demo/ozy/**` ejecuta
 5. **escalamiento** (opcional) — _Run workflow_ con `escalamiento = true`.
 
 En pull requests solo corre `test`.
+
+## Gateway e interfaz web
+
+| Componente | Manifiestos            | Imagen           | Probes                                                  |
+| ---------- | ---------------------- | ---------------- | ------------------------------------------------------- |
+| `gateway`  | `demo/gateway/k8s/`    | `ozy-gateway`    | startup, liveness y readiness en `/health`              |
+| `frontend` | `demo/frontend/k8s/`   | `ozy-frontend`   | liveness y readiness en `/healthz` (lo responde nginx)  |
+
+- El overlay `curso` los incluye, así que se despliegan junto a Ozy con un solo
+  `kubectl apply -k`. Cada uno tiene 1 réplica: el HPA es de Ozy, la capacidad
+  evaluada.
+- El navegador solo habla con nginx: `/graphql` y `/api/` se reenvían al Service
+  `gateway`, así que no hace falta CORS ni exponer el gateway aparte.
+- El gateway usa el mismo ConfigMap `ozy-config` que arma el CI desde secrets, así
+  que las URLs del core (y de búsqueda/resúmenes) tampoco quedan en el repo.
+- Ambas imágenes corren sin root (el namespace aplica PodSecurity *restricted*): el
+  gateway con el usuario 10001 y la interfaz con `nginx-unprivileged` en el puerto 8080.
+
+**Acceso.** La NetworkPolicy del curso solo deja entrar tráfico del mismo
+namespace, `infraestructura` (controlador de Ingress) y `servicios-base`. Por eso,
+desde otros grupos o desde el navegador se llega por el **Ingress** (definir
+`vars.INGRESS_HOST` y, si no es Traefik, `vars.INGRESS_CLASS`). Mientras tanto:
+
+```bash
+kubectl port-forward service/frontend 3000:8080    # interfaz en http://localhost:3000
+kubectl port-forward service/gateway 8080:8000     # GraphiQL en http://localhost:8080/graphql
+```
 
 ## Despliegue manual
 

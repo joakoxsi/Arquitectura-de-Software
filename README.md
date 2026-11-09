@@ -11,9 +11,11 @@ lenguaje simple y mantiene un glosario con ámbito.
 |---|---|
 | Documentación de Ozy (API, eventos, errores, versionamiento, flujo con curl) | [demo/ozy/README.md](demo/ozy/README.md) |
 | Código de Ozy y tests | [demo/ozy/](demo/ozy/) |
+| API Gateway GraphQL (queries, mutaciones, ejemplos) | [demo/gateway/README.md](demo/gateway/README.md) |
+| Interfaz web (React) | [demo/frontend/](demo/frontend/) |
 | Sistema base y cómo levantarlo | [demo/README.md](demo/README.md) |
 | Guía de ejecución y pruebas | [demo/docs/guia-ejecucion-y-pruebas.md](demo/docs/guia-ejecucion-y-pruebas.md) |
-| Despliegue en Kubernetes (probes, HPA, CI/CD, evidencia) | [demo/ozy/k8s/README.md](demo/ozy/k8s/README.md) |
+| Despliegue en Kubernetes de Ozy, gateway e interfaz (probes, HPA, CI/CD, evidencia) | [demo/ozy/k8s/README.md](demo/ozy/k8s/README.md) |
 | Pipeline de CI/CD | [.github/workflows/ozy-k8s.yml](.github/workflows/ozy-k8s.yml) |
 | Decisiones de arquitectura (ADR) | [demo/docs/decisiones/](demo/docs/decisiones/) |
 | Diagramas de secuencia de Ozy | `ozy-secuencias(1)-*.drawio.png` en esta carpeta |
@@ -25,7 +27,13 @@ cd demo
 docker compose up --build
 ```
 
-Luego abre la documentación interactiva de Ozy en <http://localhost:8004/docs>.
+Luego abre:
+
+| Qué | URL |
+|---|---|
+| Interfaz web | <http://localhost:3000> |
+| GraphiQL del gateway | <http://localhost:8080/graphql> |
+| Swagger de Ozy | <http://localhost:8004/docs> |
 
 ### Uso de IA
 
