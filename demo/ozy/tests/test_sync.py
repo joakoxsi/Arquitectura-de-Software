@@ -139,7 +139,7 @@ def test_with_own_broker_and_events_disabled_uses_the_api_synchronizer(repos, mo
     from fastapi.testclient import TestClient
     from app import main
     from app.synchronizer import MessageSynchronizer
-    monkeypatch.setattr(main, "RABBITMQ_URL", "amqp://ozy:x@ozy-rabbitmq:5672/")
+    monkeypatch.setattr(main, "RABBITMQ_URL", "amqp://ozy-rabbitmq:5672/")
     monkeypatch.setattr(main, "CONSUME_MESSAGE_EVENTS", False)
     monkeypatch.setattr(main, "CHANNELS_URL", "http://channels:8000")
     monkeypatch.setattr(main, "MESSAGES_URL", "http://messages:8000")
@@ -152,7 +152,7 @@ def test_compose_mode_consumes_from_the_broker(repos, monkeypatch):
     from fastapi.testclient import TestClient
     from app import main
     from app.consumer import MessageCreatedConsumer
-    monkeypatch.setattr(main, "RABBITMQ_URL", "amqp://chat:chat@rabbitmq:5672/")
+    monkeypatch.setattr(main, "RABBITMQ_URL", "amqp://rabbitmq:5672/")
     monkeypatch.setattr(main, "CONSUME_MESSAGE_EVENTS", True)
     monkeypatch.setattr(MessageCreatedConsumer, "run", lambda self: None)
     with TestClient(main.app) as client:

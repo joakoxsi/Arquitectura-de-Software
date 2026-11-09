@@ -1,8 +1,30 @@
 # Base común: Chat en microservicios
 
-Esta es la base funcional entregada al inicio de la Unidad 3. Los equipos la
-levantan con `docker compose up --build`. Está formada por tres microservicios
-independientes, cada uno dueño de sus datos:
+Esta es la base funcional entregada al inicio de la Unidad 3.
+
+## Ejecución local
+
+Desde `demo/`, genera una contraseña para RabbitMQ.
+
+```bash
+python -c "from secrets import token_hex; print(token_hex(32))"
+```
+
+Guarda el resultado en una línea `RABBITMQ_PASSWORD=` de `demo/.env`, sin
+comillas. Si el archivo ya existe, conserva las demás variables. La contraseña
+hexadecimal funciona también dentro de la URL AMQP. Compose carga `.env` al
+ejecutar `docker compose up --build` desde `demo/`.
+
+Si ya tienes el broker levantado, cambia la contraseña de su usuario `chat`
+antes de volver a ejecutar `docker compose up --build`. El comando te pide la
+nueva contraseña de forma interactiva y conserva los datos del broker.
+
+```bash
+docker compose exec rabbitmq rabbitmqctl change_password chat
+```
+
+Los servicios base son tres microservicios independientes, cada uno dueño de
+sus datos.
 
 | Servicio | Puerto | Responsabilidad |
 | --- | --- | --- |
