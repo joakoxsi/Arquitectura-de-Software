@@ -122,14 +122,33 @@ Escalar varias réplicas es seguro porque Ozy ya era _stateless_ en la API:
 
 El rol del grupo no puede crear `PodDisruptionBudget` ni `NetworkPolicy`
 (`kubectl auth can-i --list`), así que el overlay `curso` los quita con
-`$patch: delete`. La base los conserva para un clúster propio. El aislamiento
-lo da la NetworkPolicy del curso `conexiones-del-grupo`: solo admite tráfico del
-mismo namespace, de `infraestructura` y de las APIs de `servicios-base`, por lo
-que otros grupos no llegan a MongoDB ni a RabbitMQ de Ozy.
+`$patch: delete`. La base los conserva para un clúster propio. La NetworkPolicy
+del curso `conexiones-del-grupo` admite tráfico de entrada del mismo namespace,
+de `infraestructura`, de las APIs de `servicios-base` y **de cualquier namespace
+con la etiqueta `inf326.usm.cl/tenant=student`, en todos los puertos**. Es decir,
+otros grupos sí pueden llegar a la MongoDB y al RabbitMQ de Ozy: ese aislamiento
+no existe entre estudiantes (la salida de los pods está limitada de forma
+parecida). Ver «Riesgo conocido» más abajo.
 
 El namespace exige PodSecurity `baseline` y avisa con `restricted`: los cuatro
 contenedores (Ozy, MongoDB, RabbitMQ y los Jobs) corren sin root y sin
 capabilities, así que cumplen `restricted` sin avisos.
+
+### Riesgo conocido: MongoDB sin autenticación
+
+Según la política `conexiones-del-grupo` (salida de `kubectl describe networkpolicy
+-n grupo-ozy`), cualquier pod de un namespace con la etiqueta
+`inf326.usm.cl/tenant=student` puede conectarse a cualquier puerto de los pods de
+`grupo-ozy`. La MongoDB de Ozy (`ozy-mongodb:27017`) corre sin autenticación, así que
+otro grupo que conozca el nombre del Service podría leer o modificar el glosario, las
+traducciones y la copia de mensajes. El broker propio sí exige usuario y clave
+(`ozy-secrets`).
+
+No se pudo cerrar con una NetworkPolicy propia (el rol del grupo no puede crearla, ver
+arriba). La mitigación posible es activar la autenticación de MongoDB (usuario y clave
+en `ozy-secrets` y en `MONGODB_URL`), pero cambia el despliegue del StatefulSet y la
+conexión de Ozy, por lo que se dejó documentada y sin aplicar. No se probó el acceso
+desde otro namespace: es lo que se deduce de la política.
 
 ## Puesta en marcha (una vez)
 
@@ -154,9 +173,9 @@ capabilities, así que cumplen `restricted` sin avisos.
 
    | Tipo     | Nombre               | Valor                                                                                      |
    | -------- | -------------------- | ------------------------------------------------------------------------------------------ |
-   | Secret   | `OZY_SEARCH_URL`     | URL con la que el gateway llega a la búsqueda de otro grupo (vía el controlador de Ingress) |
-   | Secret   | `OZY_SEARCH_HOST`    | `Host` del Ingress de búsqueda, si su DNS aún no existe                                     |
-   | Secret   | `OZY_SUMMARIES_URL`  | URL de los resúmenes de otro grupo                                                          |
+   | Secret   | `OZY_SEARCH_URL`     | Service de búsqueda de otro grupo, directo: `http://search.<namespace>:8000`                |
+   | Secret   | `OZY_SEARCH_HOST`    | no se usa con la conexión directa; solo si hubiera que pasar por un Ingress                 |
+   | Secret   | `OZY_SUMMARIES_URL`  | Service de resúmenes de otro grupo, directo: `http://summaries.<namespace>` (puerto 80)     |
    | Variable | `INGRESS_HOST`       | host público de la interfaz. Sin él no se crea Ingress (se usa `port-forward`)              |
    | Variable | `INGRESS_CLASS`      | IngressClass del clúster (por defecto `traefik`)                                            |
 
@@ -209,10 +228,11 @@ En pull requests solo corre `test`.
 - Ambas imágenes corren sin root (el namespace aplica PodSecurity *restricted*): el
   gateway con el usuario 10001 y la interfaz con `nginx-unprivileged` en el puerto 8080.
 
-**Acceso.** La NetworkPolicy del curso solo deja entrar tráfico del mismo
-namespace, `infraestructura` (controlador de Ingress) y `servicios-base`. Por eso,
-desde otros grupos o desde el navegador se llega por el **Ingress** (definir
-`vars.INGRESS_HOST` y, si no es Traefik, `vars.INGRESS_CLASS`). Mientras tanto:
+**Acceso.** Desde el navegador se llega por el **Ingress** (definir
+`vars.INGRESS_HOST` y, si no es Traefik, `vars.INGRESS_CLASS`). Entre namespaces de
+estudiantes se llama directo al Service (la política del curso lo permite); un pod
+de `grupo-ozy` no llega a Traefik (`infraestructura`) ni a la IP pública del
+balanceador: ambos expiran. Mientras no haya Ingress:
 
 ```bash
 kubectl port-forward service/frontend 3000:8080    # interfaz en http://localhost:3000
