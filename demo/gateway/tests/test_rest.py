@@ -1,5 +1,5 @@
 """La API REST anterior sigue funcionando sobre el mismo módulo de servicios."""
-from tests.conftest import CHANNELS, MESSAGES, SEARCH, USERS
+from tests.conftest import CHANNELS, MESSAGES, SEARCH, SUMMARIES, USERS
 
 
 def test_list_messages_with_author_name(mock, client):
@@ -25,3 +25,11 @@ def test_search_202_is_passed_through(mock, client):
     mock.get(f"{SEARCH}/search/messages").respond(202, json={}, headers={"Retry-After": "4"})
     response = client.get("/api/search/messages")
     assert (response.status_code, response.headers["retry-after"]) == (202, "4")
+
+
+def test_request_summary_without_body_sends_empty_object(mock, client):
+    route = mock.post(f"{SUMMARIES}/channels/c1/summaries").respond(
+        202, json={"summary_id": "s1", "messageState": "pendiente"})
+    response = client.post("/api/channels/c1/summaries")
+    assert response.status_code == 202
+    assert route.calls.last.request.content == b"{}"
