@@ -31,7 +31,7 @@ services:
       USERS_URL: http://users:8000
       CHANNELS_URL: http://channels:8000
       MONGODB_URL: mongodb://messages-mongodb:27017
-      RABBITMQ_URL: amqp://chat:chat@rabbitmq:5672/
+      RABBITMQ_URL: amqp://chat:${RABBITMQ_PASSWORD:?Configura RABBITMQ_PASSWORD en demo/.env}@rabbitmq:5672/
     networks:
       - microsvcs
 
@@ -46,7 +46,7 @@ services:
     environment:
       USERS_URL: http://users:8000
       MONGODB_URL: mongodb://ozy-mongodb:27017
-      RABBITMQ_URL: amqp://chat:chat@rabbitmq:5672/
+      RABBITMQ_URL: amqp://chat:${RABBITMQ_PASSWORD:?Configura RABBITMQ_PASSWORD en demo/.env}@rabbitmq:5672/
     networks:
       - microsvcs
 
@@ -180,7 +180,7 @@ services:
       - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: chat
-      RABBITMQ_DEFAULT_PASS: chat
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Configura RABBITMQ_PASSWORD en demo/.env}
     networks:
       - microsvcs
 

@@ -22,6 +22,8 @@ lenguaje simple y mantiene un glosario con ámbito.
 
 ### Levantar todo en local
 
+Primero [configura la contraseña local de RabbitMQ](demo/README.md#ejecución-local).
+
 ```bash
 cd demo
 docker compose up --build

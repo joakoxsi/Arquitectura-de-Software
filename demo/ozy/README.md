@@ -37,7 +37,8 @@ Request* para Finanzas. Ozy hace visible esa ambigüedad en vez de esconderla.
 
 Requisito: Docker Desktop (o Docker Engine + Compose v2).
 
-Desde la carpeta `demo/`:
+[Configura la contraseña local de RabbitMQ](../README.md#ejecución-local) y
+ejecuta desde `demo/`.
 
 ```bash
 docker compose up --build
@@ -60,14 +61,14 @@ tarda unos segundos en arrancar y Ozy reintenta solo.
 | Recurso | URL |
 |---|---|
 | Ozy (Swagger) | <http://localhost:8004/docs> |
-| Consola de RabbitMQ | <http://localhost:15672> (usuario `chat`, clave `chat`) |
+| Consola de RabbitMQ | <http://localhost:15672> (usuario `chat`, contraseña de `RABBITMQ_PASSWORD`) |
 
 ### Variables de entorno
 
 | Variable | Obligatoria | Valor en compose | Uso |
 |---|---|---|---|
 | `MONGODB_URL` | sí | `mongodb://ozy-mongodb:27017` | Base propia `chat_ozy` |
-| `RABBITMQ_URL` | no | `amqp://chat:chat@rabbitmq:5672/` | Sin ella Ozy no consume ni publica al broker |
+| `RABBITMQ_URL` | no | `amqp://chat:${RABBITMQ_PASSWORD}@rabbitmq:5672/` | Sin ella Ozy no consume ni publica al broker |
 | `USERS_URL` | no | `http://users:8000` | Para mostrar el `display_name` del autor |
 
 ---

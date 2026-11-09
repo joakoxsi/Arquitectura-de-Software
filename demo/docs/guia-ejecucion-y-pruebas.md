@@ -25,6 +25,12 @@ Hay tres niveles de prueba, de más rápido a más completo:
 ```bash
 git clone https://github.com/joakoxsi/Arquitectura-de-Software.git
 cd Arquitectura-de-Software/demo
+```
+
+[Configura la contraseña local de RabbitMQ](../README.md#ejecución-local) y
+levanta los servicios desde `demo/`.
+
+```bash
 docker compose up --build
 ```
 
@@ -84,7 +90,8 @@ Resultado esperado: `74 passed`.
 los servicios reales y verifica cada paso. Solo usa la biblioteca estándar de
 Python.
 
-**Paso 1.** Levanta el sistema desde `demo/`:
+**Paso 1.** [Configura la contraseña de RabbitMQ](../README.md#ejecución-local) y
+levanta el sistema desde `demo/`.
 
 ```bash
 docker compose up --build
@@ -123,7 +130,7 @@ Con el sistema levantado, abre la documentación interactiva de cada servicio:
 | channels | <http://localhost:8002/docs> |
 | messages | <http://localhost:8003/docs> |
 | **Ozy** | <http://localhost:8004/docs> |
-| Consola de RabbitMQ | <http://localhost:15672> (usuario `chat`, clave `chat`) |
+| Consola de RabbitMQ | <http://localhost:15672> (usuario `chat`, contraseña de `RABBITMQ_PASSWORD`) |
 
 Orden sugerido:
 

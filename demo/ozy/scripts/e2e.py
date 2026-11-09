@@ -21,6 +21,7 @@ import random
 import string
 import sys
 import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -32,8 +33,6 @@ OZY = os.environ.get("OZY_URL", "http://localhost:8004")
 # API de administración de RabbitMQ (vacía = no se usa). En el clúster del curso
 # normalmente no está expuesta; en ese caso se usa RABBITMQ_URL (AMQP).
 RABBITMQ_API = os.environ.get("RABBITMQ_API", "http://localhost:15672/api")
-RABBITMQ_AUTH = base64.b64encode(
-    os.environ.get("RABBITMQ_API_AUTH", "chat:chat").encode()).decode()
 RABBITMQ_URL = os.environ.get("RABBITMQ_URL")
 # "0": no esperar la cola de Ozy (en el clúster Ozy lee los mensajes por API).
 OZY_QUEUE_CHECK = os.environ.get("OZY_QUEUE_CHECK", "1") != "0"
@@ -104,6 +103,22 @@ def healthy(base: str) -> bool:
     return call("GET", f"{base}/health")[0] == 200
 
 
+def rabbitmq_api_auth() -> str:
+    auth = os.environ.get("RABBITMQ_API_AUTH")
+    if not auth:
+        password = os.environ.get("RABBITMQ_PASSWORD")
+        env_file = Path(__file__).resolve().parents[2] / ".env"
+        if password is None and env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+                key, _, value = line.partition("=")
+                if key.strip() == "RABBITMQ_PASSWORD":
+                    password = value.strip()
+        if not password:
+            raise Failure("Configura RABBITMQ_PASSWORD en demo/.env o RABBITMQ_API_AUTH en el entorno.")
+        auth = f"chat:{password}"
+    return base64.b64encode(auth.encode()).decode("ascii")
+
+
 def ozy_queue_exists() -> bool:
     if RABBITMQ_URL and not RABBITMQ_API:
         import pika
@@ -118,7 +133,7 @@ def ozy_queue_exists() -> bool:
             if connection.is_open:
                 connection.close()
     status, _ = call("GET", f"{RABBITMQ_API}/queues/%2F/{OZY_QUEUE}",
-                     headers={"Authorization": f"Basic {RABBITMQ_AUTH}"})
+                     headers={"Authorization": f"Basic {rabbitmq_api_auth()}"})
     return status == 200
 
 

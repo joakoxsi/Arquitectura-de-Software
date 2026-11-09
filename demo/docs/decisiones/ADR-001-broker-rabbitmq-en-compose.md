@@ -20,9 +20,9 @@ Por eso no había forma de que otro servicio consumiera los eventos del chat.
 ## Decisión
 
 1. Agregar al compose un servicio `rabbitmq` (imagen `rabbitmq:3-management`)
-   en la red `microsvcs`, con el usuario `chat`/`chat` y los puertos 5672 (AMQP)
-   y 15672 (consola web de administración).
-2. Pasar `RABBITMQ_URL: amqp://chat:chat@rabbitmq:5672/` a `messages` y a `ozy`.
+   en la red `microsvcs`, con el usuario `chat`, una contraseña configurada
+   mediante `RABBITMQ_PASSWORD` y los puertos 5672 (AMQP) y 15672 (consola web).
+2. Construir `RABBITMQ_URL` con esa contraseña y pasarla a `messages` y a `ozy`.
 
 **No se modificó el código de `messages`**: solo su configuración en el compose.
 Se activó una capacidad que ya estaba implementada.
@@ -73,8 +73,7 @@ imagen.
 - El exchange no es durable (así lo declara `messages`): si se reinicia el
   contenedor `rabbitmq`, el exchange y sus enlaces se recrean cuando los
   servicios lo vuelvan a declarar.
-- Las credenciales `chat`/`chat` y la consola en el 15672 son adecuadas solo
-  para el entorno local de desarrollo.
+- La consola en el puerto 15672 se publica para el entorno local de desarrollo.
 
 ## Alternativas descartadas
 
