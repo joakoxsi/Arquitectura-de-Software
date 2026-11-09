@@ -7,3 +7,7 @@ kubeconfig*
 .env
 **/.claude/
 
+
+# Python compilado
+__pycache__/
+*.pyc
