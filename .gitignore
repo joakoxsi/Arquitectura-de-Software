@@ -5,3 +5,9 @@ kubeconfig*
 *.b64
 **/core.env
 .env
+**/.claude/
+
+
+# Python compilado
+__pycache__/
+*.pyc

@@ -157,3 +157,15 @@ def test_compose_mode_consumes_from_the_broker(repos, monkeypatch):
     monkeypatch.setattr(MessageCreatedConsumer, "run", lambda self: None)
     with TestClient(main.app) as client:
         assert client.get("/health/ready").json()["ingestion"] == "broker"
+
+
+def test_read_model_tiene_indice_por_canal_para_la_sincronizacion():
+    """known_ids filtra por channel_id: sin este índice recorre toda la colección."""
+    repos = Repositories(mongomock.MongoClient().chat_ozy)
+    repos.ensure_indexes()
+    repos.ensure_indexes()  # idempotente: varias réplicas lo ejecutan al arrancar
+
+    indexes = repos.read_model.collection.index_information()
+    keys = {tuple(info["key"]): info for info in indexes.values()}
+    assert keys[(("message_id", 1),)].get("unique") is True  # se conserva
+    assert (("channel_id", 1), ("message_id", 1)) in keys

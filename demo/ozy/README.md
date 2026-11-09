@@ -161,7 +161,7 @@ rechazadas en dos o más ámbitos.
 
 | Colección | Campos | Índice único |
 |---|---|---|
-| `messages_read_model` | `message_id`, `channel_id`, `author_id`, `content`, `received_at` | `message_id` |
+| `messages_read_model` | `message_id`, `channel_id`, `author_id`, `content`, `received_at` | `message_id` (+ índice no único `channel_id`, `message_id` para la sincronización por canal) |
 | `glossary_entries` | `id`, `term`, `term_normalized`, `definition`, `ambito`, `estado`, `created_at`, `validated_by`, `validated_at` | `id` · (`term_normalized`, `ambito`) |
 | `translations` | `translation_id`, `message_id`, `channel_id`, `audience_level`, `explanation`, `terms[]`, `created_at` | (`message_id`, `audience_level`) |
 | `published_events` | `type`, `subject_id`, `occurred_at`, `data` | — (índice por `occurred_at`) |

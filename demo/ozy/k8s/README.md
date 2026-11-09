@@ -122,14 +122,33 @@ Escalar varias réplicas es seguro porque Ozy ya era _stateless_ en la API:
 
 El rol del grupo no puede crear `PodDisruptionBudget` ni `NetworkPolicy`
 (`kubectl auth can-i --list`), así que el overlay `curso` los quita con
-`$patch: delete`. La base los conserva para un clúster propio. El aislamiento
-lo da la NetworkPolicy del curso `conexiones-del-grupo`: solo admite tráfico del
-mismo namespace, de `infraestructura` y de las APIs de `servicios-base`, por lo
-que otros grupos no llegan a MongoDB ni a RabbitMQ de Ozy.
+`$patch: delete`. La base los conserva para un clúster propio. La NetworkPolicy
+del curso `conexiones-del-grupo` admite tráfico de entrada del mismo namespace,
+de `infraestructura`, de las APIs de `servicios-base` y **de cualquier namespace
+con la etiqueta `inf326.usm.cl/tenant=student`, en todos los puertos**. Es decir,
+otros grupos sí pueden llegar a la MongoDB y al RabbitMQ de Ozy: ese aislamiento
+no existe entre estudiantes (la salida de los pods está limitada de forma
+parecida). Ver «Riesgo conocido» más abajo.
 
 El namespace exige PodSecurity `baseline` y avisa con `restricted`: los cuatro
 contenedores (Ozy, MongoDB, RabbitMQ y los Jobs) corren sin root y sin
 capabilities, así que cumplen `restricted` sin avisos.
+
+### Riesgo conocido: MongoDB sin autenticación
+
+Según la política `conexiones-del-grupo` (salida de `kubectl describe networkpolicy
+-n grupo-ozy`), cualquier pod de un namespace con la etiqueta
+`inf326.usm.cl/tenant=student` puede conectarse a cualquier puerto de los pods de
+`grupo-ozy`. La MongoDB de Ozy (`ozy-mongodb:27017`) corre sin autenticación, así que
+otro grupo que conozca el nombre del Service podría leer o modificar el glosario, las
+traducciones y la copia de mensajes. El broker propio sí exige usuario y clave
+(`ozy-secrets`).
+
+No se pudo cerrar con una NetworkPolicy propia (el rol del grupo no puede crearla, ver
+arriba). La mitigación posible es activar la autenticación de MongoDB (usuario y clave
+en `ozy-secrets` y en `MONGODB_URL`), pero cambia el despliegue del StatefulSet y la
+conexión de Ozy, por lo que se dejó documentada y sin aplicar. No se probó el acceso
+desde otro namespace: es lo que se deduce de la política.
 
 ## Puesta en marcha (una vez)
 
@@ -154,9 +173,9 @@ capabilities, así que cumplen `restricted` sin avisos.
 
    | Tipo     | Nombre               | Valor                                                                                      |
    | -------- | -------------------- | ------------------------------------------------------------------------------------------ |
-   | Secret   | `OZY_SEARCH_URL`     | URL con la que el gateway llega a la búsqueda de otro grupo (vía el controlador de Ingress) |
-   | Secret   | `OZY_SEARCH_HOST`    | `Host` del Ingress de búsqueda, si su DNS aún no existe                                     |
-   | Secret   | `OZY_SUMMARIES_URL`  | URL de los resúmenes de otro grupo                                                          |
+   | Secret   | `OZY_SEARCH_URL`     | Service de búsqueda de otro grupo, directo: `http://search.<namespace>:8000`                |
+   | Secret   | `OZY_SEARCH_HOST`    | no se usa con la conexión directa; solo si hubiera que pasar por un Ingress                 |
+   | Secret   | `OZY_SUMMARIES_URL`  | Service de resúmenes de otro grupo, directo: `http://summaries.<namespace>` (puerto 80)     |
    | Variable | `INGRESS_HOST`       | host público de la interfaz. Sin él no se crea Ingress (se usa `port-forward`)              |
    | Variable | `INGRESS_CLASS`      | IngressClass del clúster (por defecto `traefik`)                                            |
 
@@ -209,15 +228,84 @@ En pull requests solo corre `test`.
 - Ambas imágenes corren sin root (el namespace aplica PodSecurity *restricted*): el
   gateway con el usuario 10001 y la interfaz con `nginx-unprivileged` en el puerto 8080.
 
-**Acceso.** La NetworkPolicy del curso solo deja entrar tráfico del mismo
-namespace, `infraestructura` (controlador de Ingress) y `servicios-base`. Por eso,
-desde otros grupos o desde el navegador se llega por el **Ingress** (definir
-`vars.INGRESS_HOST` y, si no es Traefik, `vars.INGRESS_CLASS`). Mientras tanto:
+**Acceso.** Desde el navegador se llega por el **Ingress** (definir
+`vars.INGRESS_HOST` y, si no es Traefik, `vars.INGRESS_CLASS`). Entre namespaces de
+estudiantes se llama directo al Service (la política del curso lo permite); un pod
+de `grupo-ozy` no llega a Traefik (`infraestructura`) ni a la IP pública del
+balanceador: ambos expiran. Mientras no haya Ingress:
 
 ```bash
 kubectl port-forward service/frontend 3000:8080    # interfaz en http://localhost:3000
 kubectl port-forward service/gateway 8080:8000     # GraphiQL en http://localhost:8080/graphql
 ```
+
+## Conexión con los servicios de otros grupos
+
+El gateway usa dos capacidades desplegadas por otros grupos en el mismo clúster.
+Se llaman **directo a su Service**, por DNS interno:
+
+| Capacidad | Namespace | Service | Puerto | Secret de GitHub |
+| --- | --- | --- | --- | --- |
+| Búsqueda | `grupo-busqueda-avanzada` | `search` | 8000 | `OZY_SEARCH_URL=http://search.grupo-busqueda-avanzada:8000` |
+| Resúmenes | `grupo-resumenes` | `summaries` | 80 | `OZY_SUMMARIES_URL=http://summaries.grupo-resumenes` |
+
+- Los valores van **sin comillas, sin barra final y sin `/api/v1`**: el gateway agrega
+  la ruta.
+- **No** se define `OZY_SEARCH_HOST`: con un valor, el gateway mandaría un `Host` de
+  Ingress que el Service no espera.
+- El CI copia estos secrets al ConfigMap `ozy-config` en cada deploy. Cada deploy cambia
+  la imagen del gateway (etiqueta = SHA), así que el gateway se reinicia y los toma.
+  Un secret nuevo solo se aplica en el siguiente push a `main`.
+- Si falta un secret, el gateway sigue funcionando y esa sección de la interfaz
+  aparece como servicio caído.
+
+**Por qué directo y no por Ingress.** La NetworkPolicy `conexiones-del-grupo`
+(`kubectl describe networkpolicy -n grupo-ozy`) deja salir a cualquier namespace con
+la etiqueta `inf326.usm.cl/tenant=student`, en todos los puertos, pero no a
+`infraestructura` (Traefik) ni a IPs privadas. Desde el gateway se probó:
+
+| Destino | Resultado |
+| --- | --- |
+| `http://search.grupo-busqueda-avanzada:8000/health` | `{"status":"ok"}` |
+| `http://summaries.grupo-resumenes/health` | `{"status":"ok"}` |
+| `http://traefik.infraestructura/health` con `Host` de cada grupo | timeout |
+| `http://resumenes.134.199.176.3.nip.io/health` (IP pública) | timeout |
+
+Los Ingress de esos grupos sirven para el navegador, no para llamadas entre pods.
+
+### Verificar la conexión
+
+Los nombres y puertos de los Services se consultan con:
+
+```bash
+kubectl get svc -n grupo-busqueda-avanzada
+kubectl get svc -n grupo-resumenes
+```
+
+Prueba desde el gateway desplegado. No crea pods ni consume cuota:
+
+```bash
+kubectl exec -n grupo-ozy deploy/gateway -- python -c "import urllib.request as u;print(u.urlopen('http://search.grupo-busqueda-avanzada:8000/health',timeout=5).read())"
+kubectl exec -n grupo-ozy deploy/gateway -- python -c "import urllib.request as u;print(u.urlopen('http://summaries.grupo-resumenes/health',timeout=5).read())"
+```
+
+> Al copiar estos comandos, revisar que no aparezcan `%7B`/`%7D` en lugar de llaves;
+> por eso no usan `{}`.
+
+Tras el deploy, en GraphiQL (`/graphql`) la query `{ health { service status } }`
+debe mostrar `ok` en `users`, `channels`, `messages`, `ozy`, `search` y `summaries`.
+
+| Resultado | Significado | Qué hacer |
+| --- | --- | --- |
+| `{"status":"ok"}` | Conecta | Nada |
+| `timeout` | La red bloquea ese destino | No usar Ingress ni IP pública; usar el Service directo |
+| Error de DNS (`Name or service not known`) | El Service o el namespace no se llama así | `kubectl get svc -n <namespace>` y corregir el secret |
+| `search`/`summaries` en `down` en `health` | Falta el secret o no se redesplegó | Crear el secret y volver a desplegar `main` |
+| Resumen en `fallida` | Error del otro servicio (por ejemplo, cuota de Gemini) | Leer el campo `error`; no se arregla desde Ozy |
+
+Búsqueda tiene consistencia eventual: un mensaje nuevo aparece tras unos 5–12 s.
+Además, su índice contiene los mensajes de **todo** el chat compartido, no solo los
+del grupo.
 
 ## Despliegue manual
 

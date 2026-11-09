@@ -201,6 +201,42 @@ def test_request_summary(mock, gql):
     assert body["data"]["requestSummary"] == {"summaryId": "s1", "messageState": "pendiente"}
 
 
+def test_request_summary_without_arguments_sends_empty_object(mock, gql):
+    """summaries documenta el cuerpo como objeto JSON: nunca se envía sin cuerpo."""
+    route = mock.post(f"{SUMMARIES}/channels/c1/summaries").respond(
+        202, json={"summary_id": "s2", "messageState": "pendiente"})
+    body = gql('mutation { requestSummary(channelId: "c1") { summaryId } }')
+    assert sent_json(route) == {}
+    assert body["data"]["requestSummary"] == {"summaryId": "s2"}
+
+
+def test_latest_summary(mock, gql):
+    mock.get(f"{SUMMARIES}/channels/c1/summaries/latest").respond(json={
+        "id": "s1", "channel_id": "c1", "requested_by": None, "messageState": "completada",
+        "timeInterval": None, "content": "…", "error": None, "structured": None,
+        "created_at": "t", "updated_at": "t"})
+    body = gql('{ latestSummary(channelId: "c1") { id messageState } }')
+    assert body["data"]["latestSummary"] == {"id": "s1", "messageState": "completada"}
+
+
+def test_latest_summary_is_null_when_there_is_none(mock, gql):
+    mock.get(f"{SUMMARIES}/channels/c1/summaries/latest").respond(
+        404, json={"detail": "No completed summary"})
+    body = gql('{ latestSummary(channelId: "c1") { id } }')
+    assert body == {"data": {"latestSummary": None}}
+
+
+def test_latest_summary_other_errors_are_not_hidden(mock, gql):
+    mock.get(f"{SUMMARIES}/channels/c1/summaries/latest").respond(
+        503, json={"detail": "Summary storage unavailable"})
+    body = gql('{ latestSummary(channelId: "c1") { id } }')
+    # El campo es anulable: data trae null, pero el error se informa igual.
+    assert body["data"] == {"latestSummary": None}
+    [error] = body["errors"]
+    assert error["extensions"] == {"code": "SERVICE_UNAVAILABLE", "status": 503}
+    assert error["path"] == ["latestSummary"]
+
+
 # --- Errores ------------------------------------------------------------------
 
 def test_service_error_keeps_status_and_detail(mock, gql):

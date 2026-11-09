@@ -20,12 +20,16 @@ lenguaje simple y mantiene un glosario con ámbito.
 | Decisiones de arquitectura (ADR) | [demo/docs/decisiones/](demo/docs/decisiones/) |
 | Diagramas de secuencia de Ozy | `ozy-secuencias(1)-*.drawio.png` en esta carpeta |
 
-### Levantar todo
+### Levantar todo en local
 
 ```bash
 cd demo
 docker compose up --build
 ```
+
+Levanta el core (`users`, `channels`, `messages`), Ozy, el gateway, la interfaz y, con
+sus imágenes públicas, la búsqueda y los resúmenes de los otros grupos. Los resúmenes
+usan un LLM simulado (`mock`); para Gemini, ver [demo/README.md](demo/README.md).
 
 Luego abre:
 
@@ -34,6 +38,33 @@ Luego abre:
 | Interfaz web | <http://localhost:3000> |
 | GraphiQL del gateway | <http://localhost:8080/graphql> |
 | Swagger de Ozy | <http://localhost:8004/docs> |
+| Swagger de resúmenes | <http://localhost:8006/docs> |
+| API de búsqueda | <http://localhost:8005/api/v1/search/messages> |
+
+### Desplegar en Kubernetes (clúster del curso)
+
+El despliegue lo hace el CI al hacer push a `main`. Un PR, a `develop` o a `main`,
+solo corre los tests. Antes del primer deploy:
+
+1. Crear los secrets y variables de GitHub (*Settings → Secrets and variables →
+   Actions*). La lista completa está en [demo/ozy/k8s/README.md](demo/ozy/k8s/README.md#puesta-en-marcha-una-vez).
+2. Para conectar con los otros grupos, agregar:
+
+   ```
+   OZY_SEARCH_URL=http://search.grupo-busqueda-avanzada:8000
+   OZY_SUMMARIES_URL=http://summaries.grupo-resumenes
+   ```
+
+   Se llaman directo a su Service, no por su Ingress. El detalle, el motivo y cómo
+   verificarlo están en [Conexión con los servicios de otros grupos](demo/ozy/k8s/README.md#conexión-con-los-servicios-de-otros-grupos).
+3. Fusionar en `main` y seguir el rollout:
+
+   ```bash
+   kubectl rollout status deployment/ozy -n grupo-ozy
+   kubectl rollout status deployment/gateway -n grupo-ozy
+   ```
+
+4. En GraphiQL, `{ health { service status } }` debe mostrar `ok` en los seis servicios.
 
 ### Uso de IA
 

@@ -13,9 +13,12 @@ USERS_URL = os.environ.get("USERS_URL", "http://users:8000")
 CHANNELS_URL = os.environ.get("CHANNELS_URL", "http://channels:8000")
 MESSAGES_URL = os.environ.get("MESSAGES_URL", "http://messages:8000")
 OZY_URL = os.environ.get("OZY_URL", "http://ozy:8000")
-# Búsqueda (capacidad de otro grupo, Elasticsearch). En el clúster se llega por su
-# Ingress: la NetworkPolicy del curso no deja entrar tráfico desde otros namespaces.
-# Mientras su Ingress no tenga DNS real, SEARCH_HOST manda el Host que espera Traefik.
+# Búsqueda (capacidad de otro grupo, Elasticsearch). En el clúster se llega directo a su
+# Service (ej. http://search.<namespace-del-grupo>:8000): la NetworkPolicy del curso
+# (`conexiones-del-grupo`) permite el tráfico entre namespaces con la etiqueta
+# inf326.usm.cl/tenant=student. Verificado desde este gateway; por la IP pública o por
+# Traefik (`infraestructura`) la conexión expira. SEARCH_HOST es opcional: solo sirve
+# si algún día hay que llegar por un Ingress, y entonces manda el Host que este espera.
 SEARCH_URL = os.environ.get("SEARCH_URL", "http://search:8000")
 SEARCH_HOST = os.environ.get("SEARCH_HOST") or None
 SEARCH_HEADERS = {"Host": SEARCH_HOST} if SEARCH_HOST else {}

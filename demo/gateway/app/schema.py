@@ -400,9 +400,18 @@ class Query:
         return [Summary.of(s) for s in data]
 
     @strawberry.field
-    async def latest_summary(self, channel_id: strawberry.ID) -> Summary:
-        return Summary.of(await svc.call(
-            "GET", f"{SUMMARIES_URL}/api/v1/channels/{channel_id}/summaries/latest"))
+    async def latest_summary(self, channel_id: strawberry.ID) -> Optional[Summary]:
+        """Último resumen completado, o null si el canal aún no tiene ninguno."""
+        try:
+            data = await svc.call(
+                "GET", f"{SUMMARIES_URL}/api/v1/channels/{channel_id}/summaries/latest")
+        except svc.ServiceError as error:
+            # summaries responde 404 tanto si no hay resumen completado como si el
+            # canal no existe: ambos casos son «no hay último resumen» para la interfaz.
+            if error.status == 404:
+                return None
+            raise
+        return Summary.of(data)
 
     @strawberry.field
     async def summary(self, id: strawberry.ID) -> Summary:
@@ -462,7 +471,7 @@ class Mutation:
         if time_interval:
             body["timeInterval"] = {"start": time_interval.start, "end": time_interval.end}
         data = await svc.call("POST", f"{SUMMARIES_URL}/api/v1/channels/{channel_id}/summaries",
-                              json=body or None)
+                              json=body)  # siempre un objeto JSON, aunque sea {}
         return SummaryRequest(summary_id=data["summary_id"], message_state=data["messageState"])
 
 
