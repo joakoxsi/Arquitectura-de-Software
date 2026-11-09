@@ -157,7 +157,7 @@ async def request_summary(channel_id: str, request: Request):
     """Cuerpo opcional: {user_id?, timeInterval?: {start, end}}. Vacío = lo nuevo del canal."""
     body = await request.body()
     return await svc.call("POST", f"{SUMMARIES_URL}/api/v1/channels/{channel_id}/summaries",
-                          json=(await json_body(request)) if body else None)
+                          json=(await json_body(request)) if body else {})
 
 
 @app.get("/api/channels/{channel_id}/summaries")
