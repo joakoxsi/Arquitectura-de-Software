@@ -54,17 +54,12 @@ API REST de compatibilidad:
 Filtros: `content`, `channel_id`, `author_id`, `has` (`link`, `mention`),
 `min_date`/`max_date`, `sort_by` (`timestamp`, `relevance`), `sort_order`, `limit`, `offset`.
 
-**En el clúster del curso** su `search` vive en `grupo-busqueda-avanzada` y la
-NetworkPolicy `conexiones-del-grupo` no deja entrar tráfico desde otros namespaces,
-así que el gateway llega por su Ingress de Traefik. Mientras ese Ingress use el host
-provisional `busqueda.example.com` (sin DNS), se configura:
-
-```
-SEARCH_URL=http://134.199.176.3        # IP del LoadBalancer de Traefik
-SEARCH_HOST=busqueda.example.com       # Host que espera su Ingress
-```
-
-Cuando tengan un host real, basta `SEARCH_URL=http://<host>` y quitar `SEARCH_HOST`.
+**En el clúster del curso** su `search` vive en `grupo-busqueda-avanzada` y el
+gateway lo llama **directo a su Service**: `http://search.grupo-busqueda-avanzada:8000`.
+La NetworkPolicy `conexiones-del-grupo` permite el tráfico entre namespaces de
+estudiantes. No se usa su Ingress: desde un pod, Traefik y la IP pública expiran.
+Configuración y verificación en
+[ozy/k8s/README.md](ozy/k8s/README.md#conexión-con-los-servicios-de-otros-grupos).
 
 ## Resúmenes de canales (LLM)
 
@@ -83,8 +78,13 @@ resumen (202 + `summary_id`) y la interfaz consulta hasta `completada` o `fallid
 En la interfaz: botón **✦ Resumir** en cada canal → «Lo nuevo» (mensajes aún no
 resumidos) o «Por fechas», con el historial de resúmenes del canal.
 
-Por defecto corre con el proveedor `mock` (respuestas simuladas, sin API key). Para
-usar Gemini, crear `demo/.env` (no se versiona) con:
+**En el clúster del curso** su `summaries` vive en `grupo-resumenes` y el gateway lo
+llama directo a su Service, que expone el **puerto 80**: `http://summaries.grupo-resumenes`.
+Allí usa Gemini con la key de ese grupo; si su cuota se agota, el resumen termina
+`fallida` con el motivo en `error`.
+
+En local, por defecto corre con el proveedor `mock` (respuestas simuladas, sin API
+key). Para usar Gemini, crear `demo/.env` (no se versiona) con:
 
 ```
 SUMMARIES_LLM_PROVIDER=gemini
