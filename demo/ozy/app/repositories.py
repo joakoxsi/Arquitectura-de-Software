@@ -20,6 +20,10 @@ class ReadModelRepository:
 
     def ensure_indexes(self) -> None:
         self.collection.create_index("message_id", unique=True)
+        # known_ids filtra por channel_id y solo lee message_id: este índice lo
+        # resuelve sin recorrer la colección ni leer documentos (consulta cubierta).
+        self.collection.create_index(
+            [("channel_id", ASCENDING), ("message_id", ASCENDING)])
 
     def upsert(self, message: ReadMessage) -> None:
         """Idempotente: reprocesar el mismo evento no duplica ni cambia received_at."""

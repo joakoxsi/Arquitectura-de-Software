@@ -84,7 +84,11 @@ jobs:
 
   image:
     needs: test
-    if: github.event_name != 'pull_request'
+    # Solo main y github-actions publican y despliegan. Ni un PR (a develop o a main)
+    # ni un workflow_dispatch lanzado desde otra rama llegan al clúster: ahí solo hay tests.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/github-actions')
     runs-on: ubuntu-latest
     permissions:
       contents: read
