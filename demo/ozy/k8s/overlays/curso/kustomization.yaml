@@ -1,15 +1,25 @@
-# Overlay para el clúster común del curso.
-# El CI (.github/workflows/ozy-k8s.yml) reemplaza `namespace` y `newTag` en cada deploy.
+# Overlay para el clúster común del curso: Ozy + API Gateway + interfaz web.
+# El CI (.github/workflows/ozy-k8s.yml) reemplaza `namespace`, el registro
+# (ghcr.io/<dueño>) y `newTag` (commit) en cada deploy.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: grupo-ozy            # <- namespace asignado al grupo
 resources:
   - ../../base
+  - ../../../../gateway/k8s
+  - ../../../../frontend/k8s
 images:
   - name: ozy
     newName: ghcr.io/joakoxsi/ozy
     newTag: latest
-# Direcciones del chat base (solo lectura: Ozy no lo modifica). core.env NO está en
+  - name: gateway
+    newName: ghcr.io/joakoxsi/ozy-gateway
+    newTag: latest
+  - name: frontend
+    newName: ghcr.io/joakoxsi/ozy-frontend
+    newTag: latest
+# Direcciones del chat base (solo lectura: Ozy no lo modifica) y, opcionales, de las
+# capacidades de otros grupos que usa el gateway. core.env NO está en
 # el repo: se crea desde core.env.example (local) o desde secrets de GitHub (CI).
 configMapGenerator:
   - name: ozy-config

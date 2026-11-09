@@ -1,4 +1,5 @@
-# CI/CD de Ozy: tests -> imagen en GHCR -> deploy al clúster del curso -> prueba integrada.
+# CI/CD de Ozy, API Gateway e interfaz web:
+# tests -> 3 imágenes en GHCR -> deploy al clúster del curso -> prueba integrada.
 #
 # Configuración (Settings del repo -> Secrets and variables -> Actions):
 #   secrets.KUBECONFIG        kubeconfig con acceso al namespace del grupo (texto o base64;
@@ -9,6 +10,10 @@
 #   secrets.OZY_RABBITMQ_PASSWORD  clave del RabbitMQ propio de Ozy (inventarla, larga y al azar)
 #   vars.OZY_NAMESPACE        opcional: namespace del grupo (def. el que trae el kubeconfig)
 #   vars.CORE_NAMESPACE       opcional: namespace del chat base (def. servicios-base), solo para la evidencia
+#   secrets.OZY_SEARCH_URL / OZY_SEARCH_HOST / OZY_SUMMARIES_URL
+#                             opcionales: capacidades de otros grupos que usa el gateway
+#   vars.INGRESS_HOST         opcional: host público de la interfaz (sin él no se crea Ingress)
+#   vars.INGRESS_CLASS        opcional: IngressClass del clúster (def. traefik)
 # Sin KUBECONFIG el workflow igual corre tests y publica la imagen; solo omite el deploy.
 
 name: ozy-k8s
@@ -18,10 +23,14 @@ on:
     branches: [main, github-actions]
     paths:
       - "demo/ozy/**"
+      - "demo/gateway/**"
+      - "demo/frontend/**"
       - ".github/workflows/ozy-k8s.yml"
   pull_request:
     paths:
       - "demo/ozy/**"
+      - "demo/gateway/**"
+      - "demo/frontend/**"
   workflow_dispatch:
     inputs:
       escalamiento:
@@ -51,11 +60,27 @@ jobs:
           cache-dependency-path: demo/ozy/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -v
+      - name: Tests del API Gateway
+        working-directory: demo/gateway
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: demo/frontend/package-lock.json
+      - name: Compilar la interfaz web
+        working-directory: demo/frontend
+        run: |
+          npm ci
+          npm run build
       - name: Validar manifiestos (render de kustomize)
         run: |
           cp k8s/overlays/curso/core.env.example k8s/overlays/curso/core.env
           kubectl kustomize k8s/overlays/curso > /dev/null
           kubectl kustomize k8s/pruebas > /dev/null
+          kubectl kustomize ../frontend/k8s/ingress > /dev/null
 
   image:
     needs: test
@@ -64,12 +89,16 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.name.outputs.image }}
+    strategy:
+      matrix:
+        include:
+          - {name: ozy, context: demo/ozy}
+          - {name: ozy-gateway, context: demo/gateway}
+          - {name: ozy-frontend, context: demo/frontend}
     steps:
       - uses: actions/checkout@v4
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/ozy" >> "$GITHUB_OUTPUT"
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ matrix.name }}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -78,7 +107,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
         with:
-          context: demo/ozy
+          context: ${{ matrix.context }}
           push: true
           tags: |
             ${{ steps.name.outputs.image }}:${{ github.sha }}
@@ -86,8 +115,8 @@ jobs:
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
 
   deploy:
     needs: image
@@ -98,7 +127,8 @@ jobs:
       # está, el namespace que trae el kubeconfig del curso.
       NS_VAR: ${{ vars.OZY_NAMESPACE }}
       CORE_NS: ${{ vars.CORE_NAMESPACE || 'servicios-base' }}
-      IMAGE: ${{ needs.image.outputs.image }}
+      # Las 3 imágenes (ozy, ozy-gateway, ozy-frontend) viven en el mismo registro.
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
       HAS_KUBECONFIG: ${{ secrets.KUBECONFIG != '' }}
     steps:
       - uses: actions/checkout@v4
@@ -131,17 +161,22 @@ jobs:
           echo "Namespace de despliegue: $NS"
           kubectl auth can-i create deployments -n "$NS"
           kubectl auth can-i create horizontalpodautoscalers.autoscaling -n "$NS"
-      - name: Fijar namespace, imagen (por commit) y direcciones del core
+      - name: Fijar namespace, imágenes (por commit) y direcciones del core
         if: env.HAS_KUBECONFIG == 'true'
         working-directory: demo/ozy/k8s
         env:
           USERS_URL: ${{ secrets.OZY_USERS_URL }}
           CHANNELS_URL: ${{ secrets.OZY_CHANNELS_URL }}
           MESSAGES_URL: ${{ secrets.OZY_MESSAGES_URL }}
+          SEARCH_URL: ${{ secrets.OZY_SEARCH_URL }}
+          SEARCH_HOST: ${{ secrets.OZY_SEARCH_HOST }}
+          SUMMARIES_URL: ${{ secrets.OZY_SUMMARIES_URL }}
         run: |
-          for f in overlays/curso/kustomization.yaml pruebas/kustomization.yaml; do
+          REGISTRY="${REGISTRY,,}"   # GHCR exige minúsculas
+          for f in overlays/curso/kustomization.yaml pruebas/kustomization.yaml \
+                   ../../frontend/k8s/ingress/kustomization.yaml; do
             sed -i -e "s|^namespace: .*|namespace: ${NS}|" \
-                   -e "s|newName: .*|newName: ${IMAGE}|" \
+                   -e "s|newName: ghcr.io/[^/]*/|newName: ${REGISTRY}/|" \
                    -e "s|newTag: .*|newTag: ${GITHUB_SHA}|" "$f"
           done
           # Las URLs del core vienen de secrets: se escriben solo en el runner (efímero)
@@ -151,6 +186,11 @@ jobs:
           done
           printf 'USERS_URL=%s\nCHANNELS_URL=%s\nMESSAGES_URL=%s\n' \
             "$USERS_URL" "$CHANNELS_URL" "$MESSAGES_URL" > overlays/curso/core.env
+          # Opcionales: solo se agregan si el secret existe (si no, el gateway usa su
+          # valor por defecto y esa capacidad aparece como caída en la interfaz).
+          for v in SEARCH_URL SEARCH_HOST SUMMARIES_URL; do
+            [ -z "${!v}" ] || printf '%s=%s\n' "$v" "${!v}" >> overlays/curso/core.env
+          done
       - name: Secret del broker propio de Ozy
         if: env.HAS_KUBECONFIG == 'true'
         env:
@@ -173,7 +213,19 @@ jobs:
           kubectl -n "$NS" rollout status statefulset/ozy-mongodb --timeout=180s
           kubectl -n "$NS" rollout status deployment/ozy-rabbitmq --timeout=180s
           kubectl -n "$NS" rollout status deployment/ozy --timeout=240s
-          kubectl -n "$NS" get deploy,hpa,pods -l app.kubernetes.io/name=ozy -o wide
+          kubectl -n "$NS" rollout status deployment/gateway --timeout=180s
+          kubectl -n "$NS" rollout status deployment/frontend --timeout=180s
+          kubectl -n "$NS" get deploy,hpa,pods -l app.kubernetes.io/part-of=chat -o wide
+      - name: Ingress de la interfaz (solo si hay vars.INGRESS_HOST)
+        if: env.HAS_KUBECONFIG == 'true' && vars.INGRESS_HOST != ''
+        env:
+          INGRESS_HOST: ${{ vars.INGRESS_HOST }}
+          INGRESS_CLASS: ${{ vars.INGRESS_CLASS || 'traefik' }}
+        run: |
+          sed -i -e "s|HOST_PLACEHOLDER|${INGRESS_HOST}|" -e "s|CLASS_PLACEHOLDER|${INGRESS_CLASS}|" \
+            demo/frontend/k8s/ingress/ingress.yaml
+          kubectl apply -k demo/frontend/k8s/ingress
+          kubectl -n "$NS" get ingress frontend
       - name: Verificar autoscaling (HPA con métricas)
         if: env.HAS_KUBECONFIG == 'true'
         run: |
@@ -196,6 +248,8 @@ jobs:
           kubectl -n "$NS" describe deploy ozy | tail -30
           kubectl -n "$NS" get events --sort-by=.lastTimestamp | tail -30
           kubectl -n "$NS" logs -l app.kubernetes.io/component=api --tail=50 --prefix || true
+          kubectl -n "$NS" logs deploy/gateway --tail=30 || true
+          kubectl -n "$NS" logs deploy/frontend --tail=30 || true
       - name: Prueba integrada contra el chat base
         if: env.HAS_KUBECONFIG == 'true'
         run: |

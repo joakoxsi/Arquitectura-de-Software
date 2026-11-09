@@ -10,8 +10,10 @@ metadata:
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 3600
-  parallelism: 2      # 2 pods generadores x CONCURRENCY hilos
-  completions: 2
+  # 1 generador: con el gateway y la interfaz en el namespace, un segundo pod de carga
+  # dejaría la cuota justa (10/10 pods). 24 hilos bastan para llevar Ozy a 4 réplicas.
+  parallelism: 1
+  completions: 1
   template:
     metadata:
       labels:
@@ -34,7 +36,7 @@ spec:
             - name: DURATION
               value: "300"
             - name: CONCURRENCY
-              value: "16"
+              value: "24"
             - name: INTERVAL
               value: "15"
           resources:
