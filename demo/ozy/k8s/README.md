@@ -239,6 +239,74 @@ kubectl port-forward service/frontend 3000:8080    # interfaz en http://localhos
 kubectl port-forward service/gateway 8080:8000     # GraphiQL en http://localhost:8080/graphql
 ```
 
+## Conexión con los servicios de otros grupos
+
+El gateway usa dos capacidades desplegadas por otros grupos en el mismo clúster.
+Se llaman **directo a su Service**, por DNS interno:
+
+| Capacidad | Namespace | Service | Puerto | Secret de GitHub |
+| --- | --- | --- | --- | --- |
+| Búsqueda | `grupo-busqueda-avanzada` | `search` | 8000 | `OZY_SEARCH_URL=http://search.grupo-busqueda-avanzada:8000` |
+| Resúmenes | `grupo-resumenes` | `summaries` | 80 | `OZY_SUMMARIES_URL=http://summaries.grupo-resumenes` |
+
+- Los valores van **sin comillas, sin barra final y sin `/api/v1`**: el gateway agrega
+  la ruta.
+- **No** se define `OZY_SEARCH_HOST`: con un valor, el gateway mandaría un `Host` de
+  Ingress que el Service no espera.
+- El CI copia estos secrets al ConfigMap `ozy-config` en cada deploy. Cada deploy cambia
+  la imagen del gateway (etiqueta = SHA), así que el gateway se reinicia y los toma.
+  Un secret nuevo solo se aplica en el siguiente push a `main`.
+- Si falta un secret, el gateway sigue funcionando y esa sección de la interfaz
+  aparece como servicio caído.
+
+**Por qué directo y no por Ingress.** La NetworkPolicy `conexiones-del-grupo`
+(`kubectl describe networkpolicy -n grupo-ozy`) deja salir a cualquier namespace con
+la etiqueta `inf326.usm.cl/tenant=student`, en todos los puertos, pero no a
+`infraestructura` (Traefik) ni a IPs privadas. Desde el gateway se probó:
+
+| Destino | Resultado |
+| --- | --- |
+| `http://search.grupo-busqueda-avanzada:8000/health` | `{"status":"ok"}` |
+| `http://summaries.grupo-resumenes/health` | `{"status":"ok"}` |
+| `http://traefik.infraestructura/health` con `Host` de cada grupo | timeout |
+| `http://resumenes.134.199.176.3.nip.io/health` (IP pública) | timeout |
+
+Los Ingress de esos grupos sirven para el navegador, no para llamadas entre pods.
+
+### Verificar la conexión
+
+Los nombres y puertos de los Services se consultan con:
+
+```bash
+kubectl get svc -n grupo-busqueda-avanzada
+kubectl get svc -n grupo-resumenes
+```
+
+Prueba desde el gateway desplegado. No crea pods ni consume cuota:
+
+```bash
+kubectl exec -n grupo-ozy deploy/gateway -- python -c "import urllib.request as u;print(u.urlopen('http://search.grupo-busqueda-avanzada:8000/health',timeout=5).read())"
+kubectl exec -n grupo-ozy deploy/gateway -- python -c "import urllib.request as u;print(u.urlopen('http://summaries.grupo-resumenes/health',timeout=5).read())"
+```
+
+> Al copiar estos comandos, revisar que no aparezcan `%7B`/`%7D` en lugar de llaves;
+> por eso no usan `{}`.
+
+Tras el deploy, en GraphiQL (`/graphql`) la query `{ health { service status } }`
+debe mostrar `ok` en `users`, `channels`, `messages`, `ozy`, `search` y `summaries`.
+
+| Resultado | Significado | Qué hacer |
+| --- | --- | --- |
+| `{"status":"ok"}` | Conecta | Nada |
+| `timeout` | La red bloquea ese destino | No usar Ingress ni IP pública; usar el Service directo |
+| Error de DNS (`Name or service not known`) | El Service o el namespace no se llama así | `kubectl get svc -n <namespace>` y corregir el secret |
+| `search`/`summaries` en `down` en `health` | Falta el secret o no se redesplegó | Crear el secret y volver a desplegar `main` |
+| Resumen en `fallida` | Error del otro servicio (por ejemplo, cuota de Gemini) | Leer el campo `error`; no se arregla desde Ozy |
+
+Búsqueda tiene consistencia eventual: un mensaje nuevo aparece tras unos 5–12 s.
+Además, su índice contiene los mensajes de **todo** el chat compartido, no solo los
+del grupo.
+
 ## Despliegue manual
 
 No se usa: todo despliegue pasa por el workflow, para que el clúster refleje
