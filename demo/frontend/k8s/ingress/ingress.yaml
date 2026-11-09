@@ -1,0 +1,27 @@
+# Entrada desde fuera del namespace (navegador y otros grupos). La NetworkPolicy
+# del curso solo deja entrar tráfico del mismo namespace, `infraestructura` (donde
+# vive el controlador de Ingress) y `servicios-base`; por eso lo que deba usarse
+# desde afuera pasa por aquí.
+#   /         -> interfaz web (nginx), que a su vez reenvía /graphql y /api/ al gateway
+# HOST_PLACEHOLDER y CLASS_PLACEHOLDER los reemplaza el CI (vars.INGRESS_HOST y
+# vars.INGRESS_CLASS) o se editan a mano antes de `kubectl apply -k`.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: frontend
+  labels:
+    app.kubernetes.io/name: frontend
+    app.kubernetes.io/part-of: chat
+spec:
+  ingressClassName: CLASS_PLACEHOLDER
+  rules:
+    - host: HOST_PLACEHOLDER
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  name: http

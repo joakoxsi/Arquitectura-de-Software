@@ -52,6 +52,8 @@ services:
 
   gateway:
     build: ./gateway
+    # La imagen corre sin --reload (Kubernetes); en local se recarga al editar.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
       - "8080:8000"
     volumes:
@@ -71,7 +73,7 @@ services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+      - "3000:8080"   # nginx sin root escucha en 8080
     depends_on: [gateway]
     networks:
       - microsvcs
