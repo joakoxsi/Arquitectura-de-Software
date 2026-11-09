@@ -5,3 +5,5 @@ kubeconfig*
 *.b64
 **/core.env
 .env
+**/.claude/
+
