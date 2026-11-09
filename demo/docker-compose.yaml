@@ -50,6 +50,127 @@ services:
     networks:
       - microsvcs
 
+  gateway:
+    build: ./gateway
+    ports:
+      - "8080:8000"
+    volumes:
+      - ./gateway/app:/app/app
+    environment:
+      USERS_URL: http://users:8000
+      CHANNELS_URL: http://channels:8000
+      MESSAGES_URL: http://messages:8000
+      OZY_URL: http://ozy:8000
+      SEARCH_URL: http://search:8000
+      SUMMARIES_URL: http://summaries:8000
+      CORS_ORIGINS: http://localhost:5173,http://localhost:3000
+    depends_on: [users, channels, messages, ozy, search, summaries]
+    networks:
+      - microsvcs
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on: [gateway]
+    networks:
+      - microsvcs
+
+  # --- Búsqueda avanzada (capacidad del grupo de Mochytk) ---------------------
+  # Se usa su imagen pública tal cual (mismo código que despliegan en el clúster):
+  # github.com/Mochytk/INF326-Arquitectura-de-Software_Tareas/Tarea_Unidad_5_Despliegue
+  # El indexador lee el core por polling de sus APIs públicas, como en Kubernetes.
+  search:
+    image: ghcr.io/mochytk/busqueda-search:latest
+    ports:
+      - "8005:8000"
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - microsvcs
+
+  search-indexer:
+    image: ghcr.io/mochytk/busqueda-search:latest
+    command: ["python", "-m", "app.indexer"]
+    environment:
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      CHANNELS_URL: http://channels:8000
+      MESSAGES_URL: http://messages:8000
+      POLL_SECONDS: "3"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - microsvcs
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms256m -Xmx256m   # igual que en el clúster (cuota)
+    volumes: [search-data:/usr/share/elasticsearch/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s'"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+    networks: [microsvcs]
+
+  # --- Resúmenes con LLM (capacidad del grupo de marcel-silva27) ---------------
+  # Imagen pública tal cual: github.com/marcel-silva27/summaries-service
+  # Lee el core solo por sus APIs; trae su propia MongoDB y RabbitMQ.
+  # Por defecto usa el proveedor `mock` (sin API key). Para Gemini, crear demo/.env con:
+  #   SUMMARIES_LLM_PROVIDER=gemini
+  #   LLM_API_KEY=<tu key>        (nunca en el repo)
+  summaries:
+    image: ghcr.io/marcel-silva27/summaries-service:latest
+    stop_grace_period: 20s
+    ports:
+      - "8006:8000"
+    environment:
+      MONGODB_URL: mongodb://summaries-mongodb:27017
+      BROKER_URL: amqp://summaries-rabbitmq:5672
+      USERS_URL: http://users:8000
+      CHANNELS_URL: http://channels:8000
+      MESSAGES_URL: http://messages:8000
+      LLM_PROVIDER: ${SUMMARIES_LLM_PROVIDER:-mock}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gemini-3.5-flash-lite}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-gemini-3.8-flash}
+    depends_on:
+      summaries-mongodb:
+        condition: service_healthy
+      summaries-rabbitmq:
+        condition: service_healthy
+    networks: [microsvcs]
+
+  summaries-mongodb:
+    image: mongo:7
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    volumes: [summaries-data:/data/db]
+    networks: [microsvcs]
+
+  summaries-rabbitmq:
+    image: rabbitmq:4-management-alpine
+    hostname: summaries-rabbitmq
+    healthcheck:
+      test: ["CMD", "su-exec", "rabbitmq", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    volumes: [summaries-rabbitmq-data:/var/lib/rabbitmq]
+    networks: [microsvcs]
+
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -83,6 +204,9 @@ volumes:
   channels-data:
   messages-data:
   ozy-data:
+  search-data:
+  summaries-data:
+  summaries-rabbitmq-data:
 
 networks:
   microsvcs:
