@@ -3,14 +3,15 @@
 Guía práctica para levantar el sistema, probar Ozy y diagnosticar problemas.
 Para la referencia de la API y los eventos, ver [ozy/README.md](../ozy/README.md).
 
-Hay tres niveles de prueba, de más rápido a más completo:
+Estos son los niveles de prueba, de más rápido a más completo:
 
 | Nivel | Qué prueba | Necesita Docker | Tiempo |
 |---|---|---|---|
-| [1. Tests unitarios](#1-tests-unitarios-pytest) | Lógica de Ozy aislada (74 tests) | No | ~2 s |
-| [2. Prueba de punta a punta](#2-prueba-de-punta-a-punta-script) | Flujo completo con todos los servicios reales | Sí | ~1 min |
-| [3. Prueba manual](#3-prueba-manual-swagger) | Explorar la API desde el navegador | Sí | libre |
-| [4. Kubernetes](../ozy/k8s/README.md#evidencia) | Flujo integrado contra el chat base del clúster y escalamiento | kubectl | ~1 min / ~10 min |
+| [1. Tests sin Docker](#1-tests-sin-docker-pytest) | Unitarias, de servicio (BD de pruebas aislada) y de contrato con el chat base (110 tests) | No | ~2 s |
+| [2. Prueba de integración](#2-prueba-de-integración-docker-compose) | Flujo de Ozy con `users`, `channels` y `messages` reales en un compose efímero | Sí | ~1 min (más el build la primera vez) |
+| [3. Prueba de punta a punta](#3-prueba-de-punta-a-punta-script) | Flujo completo sobre el sistema levantado | Sí | ~1 min |
+| [4. Prueba manual](#4-prueba-manual-swagger) | Explorar la API desde el navegador | Sí | libre |
+| [5. Kubernetes](../ozy/k8s/README.md#evidencia) | Flujo integrado contra el chat base del clúster y escalamiento | kubectl | ~1 min / ~10 min |
 
 ## Requisitos
 
@@ -52,10 +53,14 @@ termina con `Todo el flujo funciona de punta a punta.`, el sistema está bien.
 
 ---
 
-## 1. Tests unitarios (pytest)
+## 1. Tests sin Docker (pytest)
 
-No necesitan Docker: usan MongoDB en memoria (`mongomock`) y simulan RabbitMQ y
-el servicio `users`.
+No necesitan Docker. Cada test recibe una base de pruebas nueva: por defecto es
+MongoDB en memoria (`mongomock`), se inyecta en la API con
+`app.dependency_overrides` y se destruye al terminar. RabbitMQ y `users` se
+simulan. Las pruebas de contrato cargan en memoria el código real de `users`,
+`channels` y `messages`, cada uno con su propia base de prueba. El detalle está en
+[ozy/README.md#tests](../ozy/README.md#tests).
 
 La primera vez, desde `demo/ozy/`:
 
@@ -75,16 +80,60 @@ Cada vez que quieras correrlos:
 Variantes útiles:
 
 ```bash
-.venv/Scripts/python -m pytest tests/test_api.py -v      # un archivo
+.venv/Scripts/python -m pytest -m service -v             # un tipo: unit, service o contract
+.venv/Scripts/python -m pytest tests/contract -v         # una carpeta
 .venv/Scripts/python -m pytest -k ambiguous -v           # por nombre
 .venv/Scripts/python -m pytest -x                        # parar en el primer fallo
 ```
 
-Resultado esperado: `74 passed`.
+Resultado esperado: `110 passed, 7 deselected`. Los 7 tests excluidos son los de
+integración, que se corren aparte (nivel 2).
+
+Para correr la misma suite contra una MongoDB real en vez de `mongomock`:
+
+```bash
+docker run -d --rm --name ozy-test-mongo -p 27999:27017 mongo:7
+OZY_TEST_MONGODB_URL=mongodb://localhost:27999 .venv/Scripts/python -m pytest
+docker stop ozy-test-mongo
+```
 
 ---
 
-## 2. Prueba de punta a punta (script)
+## 2. Prueba de integración (Docker Compose)
+
+Levanta un entorno propio y efímero con
+[`docker-compose.test.yaml`](../docker-compose.test.yaml): `users`, `channels`,
+`messages`, Ozy, RabbitMQ y sus MongoDB. No usa volúmenes y usa los puertos
+18001–18004, 18672 y 18673, así que no interfiere con `docker compose up`. No
+necesita `demo/.env`: la contraseña del broker es fija y solo vale para este
+entorno.
+
+Con el entorno virtual del nivel 1 ya creado, desde `demo/`:
+
+```bash
+PYTHON=ozy/.venv/bin/python ozy/scripts/integracion.sh
+```
+
+En Windows, ejecútalo desde Git Bash con `PYTHON=ozy/.venv/Scripts/python`.
+
+El script levanta el entorno y espera los healthchecks. Luego corre
+`pytest -m integration tests/integration` y destruye todo con `down -v`. Si un test
+falla, antes de destruir el entorno muestra los últimos logs de cada servicio. Con
+`KEEP=1` el entorno queda arriba para revisarlo.
+
+Resultado esperado: `7 passed`. La prueba demuestra el flujo de Ozy entre
+servicios reales:
+
+1. `messages` publica `chat.message.created` y Ozy lo recibe por RabbitMQ;
+2. Ozy traduce el mensaje y trae el nombre del autor desde `users`;
+3. Ozy publica sus eventos en el exchange `chat`;
+4. al validar el candidato, la siguiente traducción ya lo conoce;
+5. los errores entre servicios se respetan: autor o canal inexistentes, y un
+   mensaje que nunca se publicó.
+
+---
+
+## 3. Prueba de punta a punta (script)
 
 [`ozy/scripts/e2e.py`](../ozy/scripts/e2e.py) recorre el flujo completo contra
 los servicios reales y verifica cada paso. Solo usa la biblioteca estándar de
@@ -120,7 +169,7 @@ pista. Se puede ejecutar varias veces: cada corrida usa una sigla distinta.
 
 ---
 
-## 3. Prueba manual (Swagger)
+## 4. Prueba manual (Swagger)
 
 Con el sistema levantado, abre la documentación interactiva de cada servicio:
 

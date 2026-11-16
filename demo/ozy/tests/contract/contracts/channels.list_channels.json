@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ozy/contracts/channels.list_channels.json",
+  "title": "Respuesta de GET /api/v1/channels",
+  "description": "Sin broker (clúster del curso), el sincronizador de Ozy (app/synchronizer.py) lista los canales para leer sus mensajes. Solo usa `id`.",
+  "x-provider": "channels",
+  "x-consumer": "ozy",
+  "x-version": "1",
+  "x-request": { "method": "GET", "path": "/api/v1/channels" },
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id"],
+    "properties": {
+      "id": { "type": "string", "minLength": 1 },
+      "name": { "type": "string" }
+    }
+  },
+  "examples": [
+    [ { "id": "b2d4e6f8-1a3c-4e5f-8a9b-0c1d2e3f4a5b", "name": "general" } ]
+  ]
+}
