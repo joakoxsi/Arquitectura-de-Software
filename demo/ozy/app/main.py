@@ -4,7 +4,7 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError, PyMongoError
@@ -32,17 +32,37 @@ repos = Repositories(database)
 consumer: MessageCreatedConsumer | MessageSynchronizer | None = None
 
 
-def prepare_database(timeout: int = STARTUP_DB_TIMEOUT) -> None:
+def get_repos() -> Repositories:
+    """Dependencia de FastAPI con los repositorios de la base propia de Ozy.
+
+    Las rutas la reciben con `Depends(get_repos)`; los tests la reemplazan por una
+    base de pruebas con `app.dependency_overrides[get_repos]`.
+    """
+    return repos
+
+
+def active_repos() -> Repositories:
+    """Los repositorios en uso fuera de una petición (arranque e ingesta).
+
+    Respeta el override de `get_repos`, para que el seed y el consumidor usen la
+    misma base que las rutas.
+    """
+    return app.dependency_overrides.get(get_repos, get_repos)()
+
+
+def prepare_database(timeout: int = STARTUP_DB_TIMEOUT,
+                     target: Repositories | None = None) -> None:
     """Índices + seed, reintentando mientras MongoDB arranca (p. ej. en el mismo deploy).
 
     Ambas operaciones son idempotentes, así que varias réplicas pueden ejecutarlas
     a la vez sin duplicar nada.
     """
+    target = target or active_repos()
     deadline = time.monotonic() + timeout
     while True:
         try:
-            repos.ensure_indexes()
-            seed_glossary(repos.glossary)
+            target.ensure_indexes()
+            seed_glossary(target.glossary)
             return
         except PyMongoError as error:
             if time.monotonic() >= deadline:
@@ -55,12 +75,13 @@ def prepare_database(timeout: int = STARTUP_DB_TIMEOUT) -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global consumer
-    prepare_database()
+    current = active_repos()
+    prepare_database(target=current)
     if RABBITMQ_URL and CONSUME_MESSAGE_EVENTS:
-        consumer = MessageCreatedConsumer(RABBITMQ_URL, repos.read_model)
+        consumer = MessageCreatedConsumer(RABBITMQ_URL, current.read_model)
     elif CHANNELS_URL and MESSAGES_URL:
-        consumer = MessageSynchronizer(CHANNELS_URL, MESSAGES_URL, repos.read_model,
-                                       repos.leases, INSTANCE, MESSAGE_SYNC_INTERVAL)
+        consumer = MessageSynchronizer(CHANNELS_URL, MESSAGES_URL, current.read_model,
+                                       current.leases, INSTANCE, MESSAGE_SYNC_INTERVAL)
     if consumer is not None:
         consumer.start()
     yield
@@ -94,7 +115,7 @@ class ValidationUpdate(BaseModel):
     ambito: Ambito | None = None
 
 
-def emit(event_type: str, subject_id: str, data: dict) -> None:
+def emit(repos: Repositories, event_type: str, subject_id: str, data: dict) -> None:
     """Publica al broker (si hay) y registra el evento en la base propia."""
     repos.events.add(publish(event_type, subject_id, data))
 
@@ -132,7 +153,7 @@ def liveness():
 
 
 @app.get("/health/ready")
-def readiness():
+def readiness(repos: Repositories = Depends(get_repos)):
     """Readiness: solo recibe tráfico si su base propia responde.
 
     RabbitMQ no se exige: sin broker la API sigue funcionando (degradación
@@ -154,7 +175,8 @@ def readiness():
 @app.post("/api/v1/messages/{message_id}/translation",
           status_code=status.HTTP_201_CREATED)
 def create_translation(message_id: str, body: TranslationCreate | None = None,
-                       channel_id: str | None = None):
+                       channel_id: str | None = None,
+                       repos: Repositories = Depends(get_repos)):
     """`channel_id` (opcional) acelera un mensaje recién creado cuando Ozy lee por
     API: sincroniza ese canal en el momento en vez de esperar el próximo ciclo."""
     level = (body or TranslationCreate()).audience_level
@@ -170,10 +192,10 @@ def create_translation(message_id: str, body: TranslationCreate | None = None,
     translation, candidates = translate(message, level, repos.glossary)
     repos.translations.save(translation)
     for candidate in candidates:
-        emit(CANDIDATE_REGISTERED, candidate.id,
+        emit(repos, CANDIDATE_REGISTERED, candidate.id,
                 {"entry_id": candidate.id, "term": candidate.term,
                  "message_id": message.message_id, "channel_id": message.channel_id})
-    emit(TRANSLATION_CREATED, translation.translation_id,
+    emit(repos, TRANSLATION_CREATED, translation.translation_id,
             {"translation_id": translation.translation_id,
              "message_id": translation.message_id,
              "channel_id": translation.channel_id,
@@ -184,7 +206,8 @@ def create_translation(message_id: str, body: TranslationCreate | None = None,
 
 @app.get("/api/v1/messages/{message_id}/translation")
 def get_translation(message_id: str,
-                    audience_level: AudienceLevel = AudienceLevel.BASICO):
+                    audience_level: AudienceLevel = AudienceLevel.BASICO,
+                    repos: Repositories = Depends(get_repos)):
     translation = repos.translations.get(message_id, audience_level.value)
     if translation is None:
         raise HTTPException(status_code=404, detail="Translation not found")
@@ -196,12 +219,13 @@ def get_translation(message_id: str,
 
 
 @app.get("/api/v1/glossary")
-def list_glossary(ambito: Ambito | None = None, estado: Estado | None = None):
+def list_glossary(ambito: Ambito | None = None, estado: Estado | None = None,
+                  repos: Repositories = Depends(get_repos)):
     return [entry_view(entry) for entry in repos.glossary.find_all(ambito, estado)]
 
 
 @app.get("/api/v1/glossary/{term}")
-def get_term(term: str):
+def get_term(term: str, repos: Repositories = Depends(get_repos)):
     entries = repos.glossary.find_by_term(term)
     if not entries:
         raise HTTPException(status_code=404, detail="Term not found")
@@ -212,7 +236,8 @@ def get_term(term: str):
 
 
 @app.patch("/api/v1/glossary/{entry_id}/validation")
-def validate_entry(entry_id: str, body: ValidationUpdate):
+def validate_entry(entry_id: str, body: ValidationUpdate,
+                   repos: Repositories = Depends(get_repos)):
     entry = repos.glossary.get(entry_id)
     if entry is None:
         raise HTTPException(status_code=404, detail="Glossary entry not found")
@@ -226,7 +251,7 @@ def validate_entry(entry_id: str, body: ValidationUpdate):
     except DuplicateKeyError:
         raise HTTPException(status_code=409,
                             detail="Term already has an entry for that ambito")
-    emit(ENTRY_VALIDATED if updated.estado == Estado.VALIDADO else ENTRY_REJECTED,
+    emit(repos, ENTRY_VALIDATED if updated.estado == Estado.VALIDADO else ENTRY_REJECTED,
             updated.id,
             {"entry_id": updated.id, "term": updated.term,
              "ambito": updated.ambito.value if updated.ambito else None,
@@ -235,6 +260,6 @@ def validate_entry(entry_id: str, body: ValidationUpdate):
 
 
 @app.get("/api/v1/events")
-def list_events():
+def list_events(repos: Repositories = Depends(get_repos)):
     """Eventos emitidos por Ozy (los últimos 500), iguales desde cualquier réplica."""
     return repos.events.list()

@@ -194,8 +194,12 @@ Cada push a `main` o `github-actions` que toque `demo/ozy/**`, `demo/gateway/**`
 `demo/frontend/**` ejecuta
 [`ozy-k8s.yml`](../../../.github/workflows/ozy-k8s.yml):
 
-1. **test** — 74 tests de Ozy y 23 del gateway con pytest, compilación de la
-   interfaz (`npm run build`) y render de los manifiestos con kustomize.
+1. **test** — 110 tests de Ozy (unitarios, de servicio y de contrato) y 23 del
+   gateway con pytest, compilación de la interfaz (`npm run build`) y render de los
+   manifiestos con kustomize.
+   **integration** (en paralelo) — prueba de integración de Ozy con `users`,
+   `channels` y `messages` en Docker Compose (`scripts/integracion.sh`). `image`
+   espera a los dos.
 2. **image** — construye y publica 3 imágenes, `ghcr.io/<owner>/{ozy,ozy-gateway,ozy-frontend}`,
    con tag `<sha>` y `:latest`.
 3. **deploy** — fija namespace e imagen `<sha>`, arma `core.env` desde los

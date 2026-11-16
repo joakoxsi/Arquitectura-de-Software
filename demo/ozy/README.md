@@ -135,9 +135,10 @@ ozy/
 │   ├── users_client.py   # consulta opcional a users
 │   └── seed.py           # glosario inicial
 ├── scripts/e2e.py        # prueba de punta a punta (compose o Job en Kubernetes)
+├── scripts/integracion.sh # prueba de integración en Docker Compose
 ├── scripts/carga.py      # generador de carga para el HPA
 ├── k8s/                  # manifiestos, Jobs de prueba y scripts de evidencia
-└── tests/                # pytest (74 tests)
+└── tests/                # pytest: unit/, service/, contract/, integration/
 ```
 
 ---
@@ -555,27 +556,122 @@ Si el paso 3 responde `404 Message not found`, Ozy no recibió el evento: revisa
 
 ## Tests
 
-74 tests con pytest. No necesitan Docker: usan MongoDB en memoria (`mongomock`)
-y simulan RabbitMQ y el servicio `users`.
+Hay cuatro tipos de prueba, en carpetas distintas de `tests/`. Con `pytest` a secas
+corren los tres primeros (110 tests, ~2 s, sin Docker). La integración se pide
+aparte porque necesita Docker Compose.
+
+| Tipo | Carpeta | Tests | Qué demuestra | Docker |
+|---|---|---|---|---|
+| Unitarias | `tests/unit/` | 48 | Lógica interna: detector, ACL, consumidor, sincronizador, publicador, arranque | No |
+| De servicio | `tests/service/` | 39 | Cada endpoint de la API con TestClient y BD de pruebas aislada | No |
+| De contrato | `tests/contract/` | 23 | Lo que Ozy consume del chat base (y lo que publica) cumple contratos versionados | No |
+| De integración | `tests/integration/` | 7 | El flujo completo con `users`, `channels` y `messages` reales en Docker Compose | Sí |
 
 ```bash
 cd ozy
 python -m venv .venv
 .venv/Scripts/pip install -r requirements-dev.txt   # Windows
 # .venv/bin/pip install -r requirements-dev.txt     # Linux / macOS
-.venv/Scripts/python -m pytest -v
+.venv/Scripts/python -m pytest -v                   # unitarias + servicio + contrato
+.venv/Scripts/python -m pytest -m service -v        # solo un tipo: unit, service o contract
 ```
 
-| Archivo | Qué cubre |
-|---|---|
-| `test_acl.py` | Mapeo del sobre de `messages` y del payload plano, ids opacos, eventos inválidos |
-| `test_detector.py` | Mayúsculas, límites de palabra, términos de varias palabras, candidatos, rechazados |
-| `test_ambiguity.py` | PR con 3 ámbitos; efecto de rechazar definiciones; explicación de ambiguos |
-| `test_consumer.py` | Idempotencia, ack/nack, reencolado, reconexión con backoff, declaración del exchange |
-| `test_publisher_and_users.py` | Publicación al exchange, broker caído, `users` disponible y caído |
-| `test_api.py` | Todos los endpoints, eventos emitidos por transacción y códigos de error |
-| `test_sync.py` | Sincronización por API, idempotencia, canal caído, lease entre réplicas, `?channel_id=`, eventos compartidos |
-| `test_health.py` | Liveness, readiness, cabecera de réplica y reintento de MongoDB al arrancar |
+### Base de datos de pruebas
+
+Las pruebas nunca tocan la base de Ozy. Las rutas reciben los repositorios con
+`Depends(get_repos)`, y la fixture `repos` de [`tests/conftest.py`](tests/conftest.py)
+hace tres cosas en cada test:
+
+1. crea una base nueva y vacía, `chat_ozy_test_<uuid>`;
+2. la inyecta con `app.dependency_overrides[get_repos]`, y el arranque (índices y
+   seed) también la usa;
+3. al terminar, la destruye con `drop_database` y quita el override.
+
+Por defecto la base es MongoDB en memoria (`mongomock`). Para correr la misma suite
+contra una MongoDB real, se define `OZY_TEST_MONGODB_URL`:
+
+```bash
+docker run -d --rm --name ozy-test-mongo -p 27999:27017 mongo:7
+OZY_TEST_MONGODB_URL=mongodb://localhost:27999 .venv/bin/python -m pytest
+```
+
+`TestAislamiento` comprueba que, después de una petición, la base de Ozy sigue vacía.
+
+### Pruebas de servicio: dos o más por endpoint, con casos de error
+
+[`tests/service/test_endpoints.py`](tests/service/test_endpoints.py) tiene una clase
+por endpoint. Ozy no tiene autenticación, así que los casos de error son de entrada
+inválida, recurso inexistente, conflicto o método no permitido.
+
+| Endpoint | Tests | Casos de error |
+|---|---|---|
+| `GET /health` | 3 | 405 método no permitido |
+| `GET /health/live` | 3 | 503 hilo consumidor muerto |
+| `GET /health/ready` | 2 | 503 MongoDB caída |
+| `POST /api/v1/messages/{id}/translation` | 7 | 404 mensaje inexistente (sin eventos) · 422 nivel inválido · 422 cuerpo que no es objeto |
+| `GET /api/v1/messages/{id}/translation` | 5 | 404 nivel no generado · 404 mensaje inexistente · 422 nivel inválido |
+| `GET /api/v1/glossary` | 4 | 422 ámbito inexistente · 422 estado inexistente |
+| `GET /api/v1/glossary/{term}` | 3 | 404 término inexistente |
+| `PATCH /api/v1/glossary/{id}/validation` | 7 | 404 entrada inexistente (sin eventos) · 422 candidato sin definición · 422 cuerpo inválido · 409 ámbito repetido |
+| `GET /api/v1/events` | 3 | 405 método no permitido |
+
+### Pruebas de contrato con el chat base
+
+Los contratos son JSON Schema versionados en
+[`tests/contract/contracts/`](tests/contract/contracts/). Cada uno indica quién lo
+provee y quién lo consume (`x-provider`, `x-consumer`), y trae un ejemplo.
+
+| Contrato | Proveedor → consumidor | Lo usa |
+|---|---|---|
+| `chat.message.created` (evento) | `messages` → Ozy | Consumidor RabbitMQ + capa anticorrupción |
+| `GET /api/v1/users/{id}` | `users` → Ozy | `display_name` del autor |
+| `GET /api/v1/channels` | `channels` → Ozy | Sincronizador (clúster sin broker) |
+| `GET /api/v1/channels/{id}/messages` | `messages` → Ozy | Sincronizador (clúster sin broker) |
+| `chat.translation.created` (evento) | Ozy → suscriptores | Evento propio de Ozy |
+
+Cada contrato se verifica por los dos lados:
+
+- **Consumidor:** Ozy acepta el ejemplo del contrato, tolera campos nuevos (lector
+  tolerante) y rechaza lo mismo que el contrato rechaza.
+- **Proveedor:** se carga el `app/main.py` real de `users`, `channels` y `messages`
+  en el mismo proceso. Cada uno tiene su propia MongoDB en memoria, creada para la
+  prueba, y funciona sin broker. Lo que responde o publica debe cumplir el schema.
+  `messages` valida al autor y al canal contra `users` y `channels` reales, también
+  en memoria. No se accede a la base de ningún otro servicio ni se levanta el sistema.
+
+Si alguien cambia la forma del evento de `messages`, por ejemplo renombrando
+`content`, las pruebas de proveedor fallan antes de llegar al clúster.
+
+### Prueba de integración en Docker Compose
+
+[`tests/integration/test_flujo_compose.py`](tests/integration/test_flujo_compose.py)
+corre contra [`docker-compose.test.yaml`](../docker-compose.test.yaml). Ese compose
+trae solo `users`, `channels`, `messages`, Ozy, RabbitMQ y una MongoDB por servicio.
+No usa volúmenes, tiene su propia red y usa los puertos 18001–18004, 18672 y 18673,
+así que no choca con el entorno de desarrollo. Desde `demo/`:
+
+```bash
+PYTHON=ozy/.venv/bin/python ozy/scripts/integracion.sh    # KEEP=1 deja el entorno arriba
+```
+
+El script levanta el entorno (`up --build --wait`), corre
+`pytest -m integration tests/integration` y destruye el entorno (`down -v`), pase o
+falle. Si algo falla, muestra los logs. La prueba recorre este flujo:
+
+1. Ozy está listo y consume del broker (`ingestion: broker`).
+2. Se crean un usuario en `users` y un canal en `channels`, y se publica un mensaje
+   en `messages`.
+3. `messages` emite `chat.message.created`, RabbitMQ lo entrega y Ozy lo guarda en su
+   read-model y lo traduce.
+4. La traducción trae el `display_name` real, leído desde `users`.
+5. Ozy publica `chat.translation.created` y `chat.glossary.candidate.registered`. La
+   prueba los escucha en el exchange `chat`.
+6. Se valida el candidato, se emite `chat.glossary.entry.validated` y la siguiente
+   traducción ya conoce el término.
+7. Errores entre servicios: `messages` rechaza un autor o un canal inexistentes, y
+   Ozy responde 404 a un mensaje que nunca se publicó.
+
+En CI corre como el job `integration` del workflow `ozy-k8s`.
 
 ### Prueba de punta a punta
 
@@ -587,8 +683,10 @@ python ozy/scripts/e2e.py
 
 Recorre el flujo completo con los servicios reales (usuario → canal → mensaje →
 evento → traducción → validación → eventos publicados → errores) y verifica cada
-paso. La [guía de ejecución y pruebas](../docs/guia-ejecucion-y-pruebas.md)
-explica los tres niveles de prueba y cómo resolver los problemas más comunes.
+paso. Se diferencia de la prueba de integración en que corre contra el sistema
+completo, sea el compose de desarrollo o el clúster (Job `ozy-e2e`). La
+[guía de ejecución y pruebas](../docs/guia-ejecucion-y-pruebas.md) explica todos los
+niveles de prueba y cómo resolver los problemas más comunes.
 
 ---
 
@@ -621,6 +719,9 @@ Cada respuesta HTTP incluye la cabecera `X-Ozy-Instance` con el pod que respondi
 - [ADR-002](../docs/decisiones/ADR-002-correccion-serializacion-servicios-base.md):
   se corrigió en los servicios base un error de serialización que impedía a
   `messages` publicar `chat.message.created` (una línea por servicio).
+- [ADR-005](../docs/decisiones/ADR-005-estrategia-de-pruebas.md): pruebas de
+  servicio con BD aislada por `dependency_overrides`, contratos con el chat base
+  en JSON Schema verificados en ambos lados, e integración en un compose propio.
 - Motor determinista (glosario + plantillas) en vez de un LLM: resultados
   reproducibles, sin costo ni dependencia externa, y fáciles de testear.
 - Un candidato se completa con el mismo `PATCH` de validación (definición +

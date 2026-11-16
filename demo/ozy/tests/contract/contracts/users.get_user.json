@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ozy/contracts/users.get_user.json",
+  "title": "Respuesta de GET /api/v1/users/{user_id}",
+  "description": "Ozy consulta a `users` el nombre del autor de un mensaje (app/users_client.py). Con 200 espera un objeto con `display_name`; con 404 (usuario inexistente) entrega la traducción con display_name null.",
+  "x-provider": "users",
+  "x-consumer": "ozy",
+  "x-version": "1",
+  "x-request": { "method": "GET", "path": "/api/v1/users/{user_id}" },
+  "x-responses": { "200": "este schema", "404": { "detail": "User not found" } },
+  "type": "object",
+  "required": ["id", "display_name"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 80 }
+  },
+  "examples": [
+    { "id": "9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a", "display_name": "Ana" }
+  ]
+}

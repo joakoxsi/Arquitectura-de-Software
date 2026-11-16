@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ozy/contracts/chat.translation.created.json",
+  "title": "Evento chat.translation.created",
+  "description": "Evento que publica Ozy en el exchange `chat` tras cada traducción. Usa el mismo sobre que los servicios base (type, subject_id, occurred_at, data). Agregar campos a `data` es compatible; quitarlos o renombrarlos exige un tipo nuevo.",
+  "x-provider": "ozy",
+  "x-consumer": "cualquier suscriptor del exchange chat",
+  "x-version": "1",
+  "type": "object",
+  "required": ["type", "subject_id", "occurred_at", "data"],
+  "properties": {
+    "type": { "const": "chat.translation.created" },
+    "subject_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "data": {
+      "type": "object",
+      "required": ["translation_id", "message_id", "channel_id", "audience_level", "terms"],
+      "properties": {
+        "translation_id": { "type": "string", "minLength": 1 },
+        "message_id": { "type": "string", "minLength": 1 },
+        "channel_id": { "type": "string", "minLength": 1 },
+        "audience_level": { "enum": ["basico", "intermedio", "experto"] },
+        "terms": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "examples": [
+    {
+      "type": "chat.translation.created",
+      "subject_id": "a1c56447-8950-4541-8fb2-e63972e34a01",
+      "occurred_at": "2026-10-05T02:46:52.401550+00:00",
+      "data": {
+        "translation_id": "a1c56447-8950-4541-8fb2-e63972e34a01",
+        "message_id": "6f1c2a90-3b5e-4d7a-9c11-2e8f0a4b7d55",
+        "channel_id": "b2d4e6f8-1a3c-4e5f-8a9b-0c1d2e3f4a5b",
+        "audience_level": "basico",
+        "terms": ["PR", "Pipeline", "KPI", "ETL"]
+      }
+    }
+  ]
+}

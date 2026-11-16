@@ -127,9 +127,9 @@ def test_readiness_reports_ingestion_mode(client, repos, monkeypatch):
     assert body["consumer"] == "dead"  # el hilo no fue iniciado en el test
 
 
-def test_events_are_shared_between_replicas(client, message):
+def test_events_are_shared_between_replicas(client, repos, message):
     client.post("/api/v1/messages/m1/translation")
-    other_replica = Repositories(main.repos.glossary.collection.database)
+    other_replica = Repositories(repos.glossary.collection.database)
     types = [event["type"] for event in other_replica.events.list()]
     assert "chat.translation.created" in types
 

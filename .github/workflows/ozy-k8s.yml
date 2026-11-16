@@ -1,5 +1,6 @@
 # CI/CD de Ozy, API Gateway e interfaz web:
-# tests -> 3 imágenes en GHCR -> deploy al clúster del curso -> prueba integrada.
+# tests (unitarios, de servicio y de contrato) + integración en Docker Compose
+# -> 3 imágenes en GHCR -> deploy al clúster del curso -> prueba integrada.
 #
 # Configuración (Settings del repo -> Secrets and variables -> Actions):
 #   secrets.KUBECONFIG        kubeconfig con acceso al namespace del grupo (texto o base64;
@@ -31,6 +32,12 @@ on:
       - "demo/ozy/**"
       - "demo/gateway/**"
       - "demo/frontend/**"
+      # Las pruebas de contrato e integración usan el código del chat base.
+      - "demo/users/**"
+      - "demo/channels/**"
+      - "demo/messages/**"
+      - "demo/docker-compose.test.yaml"
+      - ".github/workflows/ozy-k8s.yml"
   workflow_dispatch:
     inputs:
       escalamiento:
@@ -59,7 +66,8 @@ jobs:
           cache: pip
           cache-dependency-path: demo/ozy/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
-      - run: python -m pytest -v
+      - name: Pruebas unitarias, de servicio y de contrato de Ozy
+        run: python -m pytest -v
       - name: Tests del API Gateway
         working-directory: demo/gateway
         run: |
@@ -82,8 +90,25 @@ jobs:
           kubectl kustomize k8s/pruebas > /dev/null
           kubectl kustomize ../frontend/k8s/ingress > /dev/null
 
+  # Flujo de Ozy con users, channels y messages reales (demo/docker-compose.test.yaml).
+  integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: demo/ozy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: demo/ozy/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Prueba de integración en Docker Compose
+        run: scripts/integracion.sh
+
   image:
-    needs: test
+    needs: [test, integration]
     # Solo main y github-actions publican y despliegan. Ni un PR (a develop o a main)
     # ni un workflow_dispatch lanzado desde otra rama llegan al clúster: ahí solo hay tests.
     if: >-
